@@ -1,0 +1,19 @@
+### R
+### IDE: Rstudio/Positron
+tidyverse
+tidymodels
+readr
+caret
+xgboost
+
+
+### Python
+### IDE: Positron/Jupyter/whatever you like
+pandas
+scikit-learn
+statsmodels
+torch
+matplotlib/seaborn
+
+
+### software: git, conda/uv/venve/poetry for Python
