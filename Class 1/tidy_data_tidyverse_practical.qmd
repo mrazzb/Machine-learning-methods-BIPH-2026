@@ -1,48 +1,6 @@
----
-title: "Practical: Tidy Data and Data Manipulation with tidyverse"
-subtitle: "50-minute beginner-friendly practical"
-author: ""
-format:
-  html:
-    toc: true
-    toc-depth: 2
-    code-fold: false
-    theme: cosmo
-execute:
-  echo: true
-  warning: false
-  message: false
----
-
-## Learning goals
-
-By the end of this practical, students should be able to:
-
-1. Explain what **tidy data** means.
-2. Use core `dplyr` verbs: `select()`, `filter()`, `mutate()`, `summarise()`, `group_by()`, `arrange()`.
-3. Reshape data with `pivot_longer()` and `pivot_wider()`.
-4. Combine tables using joins.
-5. Translate the main operations conceptually to **pandas**.
-
-Recommended dataset: **Palmer Penguins**. It is small, clean enough for beginners, but realistic enough to demonstrate missing values, categories, grouping, and reshaping.
-
-Approximate timing:
-
-| Section | Time |
-|---|---:|
-| Setup and tidy data concept | 5 min |
-| Inspecting and selecting data | 7 min |
-| Filtering and arranging | 7 min |
-| Mutating new columns | 8 min |
-| Grouping and summarising | 8 min |
-| Pivoting | 8 min |
-| Joins | 5 min |
-| Mini exercise | 2 min |
-
 ## 1. Setup
 
 ```{r}
-# Install once if needed:
 # install.packages("tidyverse")
 # install.packages("palmerpenguins")
 
@@ -53,7 +11,6 @@ penguins <- penguins
 ```
 
 ```{r}
-# Quick look at the data
 penguins
 ```
 
@@ -105,8 +62,7 @@ ncol(penguins)
 Use `select()` when you want to keep only specific columns.
 
 ```{r}
-penguins_basic <- penguins %>%
-  select(species, island, sex, body_mass_g)
+penguins_basic <- penguins %>%select(species, island, sex, body_mass_g)
 
 penguins_basic
 ```
@@ -121,8 +77,7 @@ penguins_bill
 
 ```{r}
 # Remove a column
-penguins_no_year <- penguins %>%
-  select(-year)
+penguins_no_year <- penguins %>%select(-year)
 
 penguins_no_year
 ```
@@ -139,7 +94,7 @@ penguins_no_year
 Create a table containing only `species`, `island`, `flipper_length_mm`, and `body_mass_g`.
 
 ```{r}
-# Your code here
+
 ```
 
 ## 4. Filtering rows with `filter()`
@@ -188,8 +143,7 @@ adelie_or_chinstrap
 
 ```{r}
 # Remove missing body mass values
-penguins_mass_known <- penguins %>%
-  filter(!is.na(body_mass_g))
+penguins_mass_known <- penguins %>% drop_na()
 
 penguins_mass_known
 ```
@@ -203,9 +157,8 @@ penguins_mass_known
 # df[df["body_mass_g"].notna()]
 ```
 
-### Exercise 2
 
-Keep only penguins from `Dream` island with known sex.
+Keep only penguins from `Dream` island.
 
 ```{r}
 # Your code here
@@ -270,9 +223,7 @@ penguins2 <- penguins2 %>%
       body_mass_g < 3500 ~ "small",
       body_mass_g >= 3500 & body_mass_g < 5000 ~ "medium",
       body_mass_g >= 5000 ~ "large",
-      TRUE ~ NA_character_
-    )
-  )
+      TRUE ~ NA_character_))
 
 penguins2 %>%
   select(species, body_mass_g, mass_category)
@@ -319,8 +270,7 @@ species_summary <- penguins %>%
     n = n(),
     mean_body_mass = mean(body_mass_g, na.rm = TRUE),
     sd_body_mass = sd(body_mass_g, na.rm = TRUE),
-    mean_flipper_length = mean(flipper_length_mm, na.rm = TRUE)
-  )
+    mean_flipper_length = mean(flipper_length_mm, na.rm = TRUE))
 
 species_summary
 ```
@@ -331,9 +281,7 @@ penguins %>%
   group_by(species, sex) %>%
   summarise(
     n = n(),
-    mean_body_mass = mean(body_mass_g, na.rm = TRUE),
-    .groups = "drop"
-  )
+    mean_body_mass = mean(body_mass_g, na.rm = TRUE))
 ```
 
 ```{r}
@@ -363,27 +311,6 @@ Calculate the mean bill length for each species and island combination.
 # Your code here
 ```
 
-## 8. Using pipes for readable workflows
-
-The pipe `%>%` reads as "then".
-
-Example: take the penguins dataset, then remove missing body mass values, then group by species, then calculate mean body mass, then sort the result.
-
-```{r}
-penguins %>%
-  filter(!is.na(body_mass_g)) %>%
-  group_by(species) %>%
-  summarise(mean_body_mass = mean(body_mass_g), .groups = "drop") %>%
-  arrange(desc(mean_body_mass))
-```
-
-```{r}
-# pandas equivalent:
-# (df.dropna(subset=["body_mass_g"])
-#    .groupby("species", as_index=False)
-#    .agg(mean_body_mass=("body_mass_g", "mean"))
-#    .sort_values("mean_body_mass", ascending=False))
-```
 
 ## 9. Pivoting: long and wide data
 
@@ -405,8 +332,7 @@ penguins_long <- penguins_measurements %>%
   pivot_longer(
     cols = c(bill_length_mm, bill_depth_mm, flipper_length_mm, body_mass_g),
     names_to = "measurement",
-    values_to = "value"
-  )
+    values_to = "value")
 
 penguins_long
 ```
@@ -462,13 +388,6 @@ summary_wide
 # ).reset_index()
 ```
 
-### Exercise 5
-
-Create a long table containing `species`, `sex`, `bill_length_mm`, and `bill_depth_mm`. The final columns should be `species`, `sex`, `bill_measurement`, and `value`.
-
-```{r}
-# Your code here
-```
 
 ## 10. Joins
 
@@ -480,8 +399,7 @@ We will create a small lookup table with ecological notes for each species.
 species_info <- tibble(
   species = c("Adelie", "Chinstrap", "Gentoo"),
   genus = c("Pygoscelis", "Pygoscelis", "Pygoscelis"),
-  typical_region = c("Antarctic coast", "Subantarctic islands", "Subantarctic islands")
-)
+  typical_region = c("Antarctic coast", "Subantarctic islands", "Subantarctic islands"))
 
 species_info
 ```
@@ -523,68 +441,6 @@ penguins %>%
 # anti = df[~df["species"].isin(species_info["species"])]
 ```
 
-### Exercise 6
-
-Create an island information table with columns `island` and `island_type`, then join it to `penguins`.
-
-```{r}
-# Example starting point:
-island_info <- tibble(
-  island = c("Biscoe", "Dream", "Torgersen"),
-  island_type = c("large island", "small island", "small island")
-)
-
-# Your join code here
-```
-
-## 11. Mini-project: one full tidyverse pipeline
-
-Task: Create a table showing, for each species and sex:
-
-1. Number of penguins.
-2. Mean body mass in kilograms.
-3. Mean flipper length in centimeters.
-4. Only groups with at least 10 observations.
-5. Sort from highest to lowest mean body mass.
-
-```{r}
-mini_project_result <- penguins %>%
-  filter(!is.na(sex), !is.na(body_mass_g), !is.na(flipper_length_mm)) %>%
-  mutate(
-    body_mass_kg = body_mass_g / 1000,
-    flipper_length_cm = flipper_length_mm / 10
-  ) %>%
-  group_by(species, sex) %>%
-  summarise(
-    n = n(),
-    mean_body_mass_kg = mean(body_mass_kg),
-    mean_flipper_length_cm = mean(flipper_length_cm),
-    .groups = "drop"
-  ) %>%
-  filter(n >= 10) %>%
-  arrange(desc(mean_body_mass_kg))
-
-mini_project_result
-```
-
-```{r}
-# pandas equivalent:
-# result = (
-#     df.dropna(subset=["sex", "body_mass_g", "flipper_length_mm"])
-#       .assign(
-#           body_mass_kg=lambda x: x["body_mass_g"] / 1000,
-#           flipper_length_cm=lambda x: x["flipper_length_mm"] / 10
-#       )
-#       .groupby(["species", "sex"], as_index=False)
-#       .agg(
-#           n=("species", "size"),
-#           mean_body_mass_kg=("body_mass_kg", "mean"),
-#           mean_flipper_length_cm=("flipper_length_cm", "mean")
-#       )
-#       .query("n >= 10")
-#       .sort_values("mean_body_mass_kg", ascending=False)
-# )
-```
 
 ## 12. Optional quick plot
 
@@ -627,16 +483,157 @@ penguins %>%
 | `pivot_wider()` | Long to wide | `df.pivot()` / `df.pivot_table()` |
 | `left_join()` | Add matching columns | `df.merge(..., how="left")` |
 
-## 14. Homework / extension
 
-Using the same dataset:
 
-1. Find the heaviest penguin for each species.
-2. Calculate mean body mass by year and species.
-3. Create a long-format table with all numeric measurements.
-4. Join a manually created table containing species-level notes.
-5. Make one plot from a summarised table.
+
+# Homework: Cleaning and Tidying Synthetic Messy Penguin Data
+
+In this homework, you will work with a deliberately messy version of the `penguins` dataset.
+
+The goal is to practice the full tidyverse workflow:
+
+1. Generate or load messy data
+2. Inspect problems
+3. Clean missing values and inconsistent labels
+4. Filter rows
+5. Mutate new variables
+6. Pivot from wide to long format
+7. Join with another table
+8. Summarise grouped data
+9. Arrange/order the final result
+
+---
+
+
+
+
+
+
+## Homework Task
+
+Clean and analyse the messy dataset.
+
+## Read daata
 
 ```{r}
-# Space for homework code
+data_penquins<-read_csv()
+metada_penquins<-read_csv()
 ```
+
+
+### Step 1: Inspect the data
+
+Check:
+
+- number of rows and columns
+- column names
+- missing values
+- unique values in `species`, `island`, `sex`, and `observation_quality`
+
+```{r}
+
+```
+
+
+### Step 2: Clean categorical variables
+
+Create a new object called `penguins_cleaned_homework`.
+
+Recommended operations:
+
+- remove extra spaces using `str_trim()`
+- standardise text case using `str_to_title()` or `str_to_lower()`
+- make sex values consistent
+- remove rows with missing values in important columns
+
+```{r}
+
+```
+
+
+### Step 3: Filter useful observations
+
+Keep only:
+
+- high or medium quality observations
+- penguins with body mass above 3000 g
+- penguins from Biscoe or Dream island
+
+```{r}
+
+```
+
+
+
+### Step 4: Add new variables with `mutate()`
+
+Add:
+
+- `body_mass_kg`
+- `bill_ratio = bill_length_mm / bill_depth_mm`
+- `large_penguin`, where body mass above 4500 g is `"large"` and otherwise `"regular"`
+
+```{r}
+
+```
+
+
+
+### Step 5: Pivot to long format
+
+Convert measurement columns into a tidy long table.
+
+Use these columns:
+
+- `bill_length_mm`
+- `bill_depth_mm`
+- `flipper_length_mm`
+- `body_mass_g`
+
+
+```{r}
+
+```
+
+### Step 6: Join with island metadata
+
+Join the cleaned penguin data with `island_metadata`.
+
+```{r}
+
+```
+
+
+### Step 7: Group, summarise, and order
+
+Calculate summary statistics by:
+
+- species
+- island
+- sex
+- protected_area
+
+Calculate:
+
+- number of observations
+- mean body mass
+- median flipper length
+- mean bill ratio
+
+```{r}
+
+```
+
+
+## Expected Output
+
+Result should contain 
+
+1. A cleaned dataset
+2. A filtered dataset
+3. A long-format dataset created with `pivot_longer()`
+4. A joined dataset
+5. A grouped summary table ordered by mean body mass
+
+
+
