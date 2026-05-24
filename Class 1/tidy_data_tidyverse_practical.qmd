@@ -442,10 +442,6 @@ penguins %>%
 ```
 
 
-## 12. Optional quick plot
-
-Although this practical focuses on data manipulation, a quick plot helps show why tidy data is useful.
-
 ```{r}
 penguins %>%
   filter(!is.na(body_mass_g), !is.na(species)) %>%

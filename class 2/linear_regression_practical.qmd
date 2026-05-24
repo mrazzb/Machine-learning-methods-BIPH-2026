@@ -1,0 +1,858 @@
+---
+title: "Practical: Linear Regression in R"
+subtitle: "Model building, assumptions, transformations, selection, and polynomial regression"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+
+# Setup
+
+```{r}
+library(tidyverse)
+library(broom)
+library(modelr)
+```
+
+```{r}
+# pandas equivalent:
+# import pandas as pd
+# import numpy as np
+# import seaborn as sns
+# import matplotlib.pyplot as plt
+# import statsmodels.api as sm
+# from sklearn.metrics import mean_squared_error
+```
+
+
+# Dataset
+
+We will use the built-in `mpg` dataset from `ggplot2`.
+
+Each row describes one car model.  
+Our target variable will be:
+
+- `hwy`: highway fuel efficiency in miles per gallon.
+
+Possible predictors include:
+
+- `displ`: engine displacement;
+- `cyl`: number of cylinders;
+- `drv`: drivetrain;
+- `class`: vehicle class;
+- `year`: model year;
+- `cty`: city fuel efficiency.
+
+```{r}
+mpg
+```
+
+
+
+```{r}
+# pandas equivalent:
+# df.info()
+# df.describe(include="all")
+```
+
+
+# 1. Exploratory Data Analysis
+
+Before fitting a model, we need to understand the data.
+
+```{r}
+mpg %>%
+  count(class, sort = TRUE)
+```
+
+
+
+```{r}
+# pandas equivalent:
+# df["class"].value_counts()
+```
+
+
+```{r}
+mpg %>%
+  summarise(
+    n = n(),
+    mean_hwy = mean(hwy),
+    sd_hwy = sd(hwy),
+    min_hwy = min(hwy),
+    max_hwy = max(hwy)
+  )
+```
+
+
+
+```{r}
+# pandas equivalent:
+# df["hwy"].agg(["count", "mean", "std", "min", "max"])
+```
+
+## Distribution of the target variable
+
+```{r}
+ggplot(mpg, aes(x = hwy)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Distribution of highway MPG",
+    x = "Highway MPG",
+    y = "Count" )
+```
+
+
+## Relationship between displacement and highway MPG
+
+```{r}
+ggplot(mpg, aes(x = displ, y = hwy)) +
+  geom_point(aes(color = class), alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Engine displacement vs highway MPG",
+    x = "Engine displacement",
+    y = "Highway MPG")
+```
+
+
+
+## Boxplot by vehicle class
+
+```{r}
+ggplot(mpg, aes(x = class, y = hwy, fill = class)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  coord_flip() +
+  labs(
+    title = "Highway MPG by vehicle class",
+    x = "Vehicle class",
+    y = "Highway MPG")
+```
+
+
+
+# 2. Simple Linear Regression
+
+We start with one predictor:
+
+```{r}
+model_simple <- lm(hwy ~ displ, data = mpg)
+
+summary(model_simple)
+```
+
+
+
+```{r}
+# pandas equivalent:
+# X = sm.add_constant(df["displ"])
+# model = sm.OLS(df["hwy"], X).fit()
+# print(model.summary())
+```
+
+
+## Interpretation
+
+The model has the form:
+
+$$
+hwy = beta_0 + beta_1 * displ
+$$
+
+Where:
+
+- intercept is expected `hwy` when `displ = 0`;
+- slope tells how much `hwy` changes when `displ` increases by 1 unit.
+
+```{r}
+tidy(model_simple)
+glance(model_simple)
+```
+
+
+
+```{r}
+# pandas equivalent:
+# model.params
+# model.rsquared
+# model.rsquared_adj
+```
+
+
+## Visualising the fitted regression line
+
+```{r}
+ggplot(mpg, aes(x = displ, y = hwy)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  theme_minimal() +
+  labs(
+    title = "Simple linear regression",
+    x = "Engine displacement",
+    y = "Highway MPG")
+```
+
+
+
+# 3. Regression Assumptions
+
+Linear regression is simple and powerful, but it works best when several assumptions are reasonably satisfied.
+
+In practice, we do not expect perfect assumptions. We check whether violations are serious enough to make the model misleading.
+
+The key assumptions are:
+
+1. **Linearity**: the expected value of the target changes linearly with predictors.
+2. **Normality of residuals**: residuals are approximately normally distributed.
+3. **Homoscedasticity**: residual variance is approximately constant.
+4. **Independence**: observations are independent.
+5. **No severe multicollinearity**: predictors are not almost duplicates of each other.
+6. **No extreme influential points**: individual observations should not dominate the model.
+
+---
+
+## Visual intuition: good vs problematic regression data
+
+The next synthetic examples are not used for modelling.  
+They are only visual illustrations.
+
+```{r}
+set.seed(2026)
+
+assumption_examples <- tibble(
+  x = rep(seq(1, 10, length.out = 80), 3),
+  case = rep(c("Good linear pattern", "Nonlinear pattern", "Changing variance"), each = 80)
+) %>%
+  mutate(
+    y = case_when(
+      case == "Good linear pattern" ~ 3 + 2 * x + rnorm(n(), 0, 2),
+      case == "Nonlinear pattern" ~ 3 + 1.5 * x + 0.8 * x^2 + rnorm(n(), 0, 5),
+      case == "Changing variance" ~ 3 + 2 * x + rnorm(n(), 0, x * 0.8)
+    )
+  )
+
+ggplot(assumption_examples, aes(x = x, y = y)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ case, scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Linear regression assumption examples",
+    subtitle = "The red line is a linear fit",
+    x = "Predictor",
+    y = "Target"
+  )
+```
+
+
+## Assumption 1: Linearity
+
+The relationship between predictors and the target should be approximately linear.
+
+In our simple model:
+
+```{r}
+model_simple <- lm(hwy ~ displ, data = mpg)
+```
+
+we check whether the residuals show a systematic pattern.
+
+```{r}
+plot(model_simple, which = 1)
+```
+
+Interpretation:
+
+- random scatter around zero is good;
+- curved patterns suggest nonlinearity;
+- strong patterns suggest the model is missing something.
+
+
+
+## Assumption 2: Normality of residuals
+
+Residuals should be approximately normally distributed.
+
+This matters most for:
+
+- p-values;
+- confidence intervals;
+- small datasets.
+
+It is less critical for pure prediction in large datasets.
+
+```{r}
+plot(model_simple, which = 2)
+```
+
+A histogram of residuals:
+
+```{r}
+residual_data <- tibble(residuals = residuals(model_simple))
+
+ggplot(residual_data, aes(x = residuals)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Distribution of residuals",
+    x = "Residual",
+    y = "Count")
+```
+
+
+## Assumption 3: Homoscedasticity
+
+Homoscedasticity means approximately constant residual variance.
+
+```{r}
+plot(model_simple, which = 3)
+```
+
+Problem signs:
+
+- funnel shape;
+- increasing spread;
+- decreasing spread.
+
+A direct residual plot can also help:
+
+```{r}
+ggplot(model_simple, aes(x = .fitted, y = abs(.resid))) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Absolute residuals vs fitted values",
+    x = "Fitted values",
+    y = "Absolute residuals")
+```
+
+If residuals become larger as fitted values increase, the model has non-constant variance.
+
+Possible responses:
+
+- transform the target variable;
+- transform predictors;
+- use weighted regression;
+- use robust standard errors;
+- use a different model.
+
+
+
+## Assumption 4: Independence
+
+Independence means observations should not be repeated measurements or strongly dependent on each other.
+
+For this dataset, we assume each row is an independent car model.
+
+Examples where independence may fail:
+
+- repeated measurements from the same patient;
+- time series;
+- spatial measurements;
+- multiple technical replicates from the same experiment;
+- multiple rows from the same car model under slightly different settings.
+
+If independence is violated, ordinary linear regression may underestimate uncertainty.
+
+Possible alternatives:
+
+- mixed-effects models;
+- time-series models;
+- clustered standard errors.
+
+
+
+## Assumption 5: Multicollinearity
+
+Multicollinearity means predictors are strongly correlated with each other.
+
+For example, `cty` and `hwy` are very similar fuel-efficiency measurements, so using `cty` to predict `hwy` can give artificially strong results.
+
+We can inspect correlations between numeric variables:
+
+```{r}
+mpg %>%
+  select(where(is.numeric)) %>%
+  cor()
+```
+
+# pandas equivalent:
+# df.select_dtypes("number").corr()
+
+A visual correlation heatmap:
+
+```{r}
+mpg %>%
+  select(where(is.numeric)) %>%
+  cor() %>%
+  as.data.frame() %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(
+    cols = -var1,
+    names_to = "var2",
+    values_to = "correlation"
+  ) %>%
+  ggplot(aes(x = var1, y = var2, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(correlation, 2)), size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Correlation between numeric variables",
+    x = NULL,
+    y = NULL,
+    fill = "Correlation"
+  )
+```
+
+High multicollinearity can cause:
+
+- unstable coefficients;
+- large standard errors;
+- coefficients that change strongly when another variable is added;
+- difficulty interpreting individual predictors.
+
+---
+
+## Assumption 6: Outliers and influential observations
+
+Some points may strongly affect the regression line.
+
+```{r}
+plot(model_simple, which = 4)
+```
+
+Cook's distance helps identify influential observations.
+
+Outliers should not be removed automatically.
+
+First ask:
+
+- Is it a data entry error?
+- Is it a valid but unusual observation?
+- Does the model depend too much on it?
+- Should we fit models with and without it and compare?
+
+
+
+# 4. Multimodal Data and Simpson's Paradox
+
+Before moving to multiple regression, we should discuss a common problem in real datasets:
+
+A relationship that appears in the pooled dataset can disappear, weaken, or even reverse when we split the data into meaningful groups.
+
+This is often called **Simpson's paradox**.
+
+It is especially important when data contain:
+
+- several biological groups;
+- different experimental batches;
+- sex-specific effects;
+- different species;
+- different treatment conditions;
+- different instruments or laboratories.
+
+In regression, this means that one global regression line can be misleading.
+
+
+## EMultimodal distribution
+
+```{r}
+set.seed(2026)
+
+multimodal_data <- tibble(
+  group = rep(c("Group A", "Group B"), each = 100),
+  x = c(
+    rnorm(100, mean = 3, sd = 0.8),
+    rnorm(100, mean = 8, sd = 0.8)
+  ),
+  y = c(
+    rnorm(100, mean = 12, sd = 1.5),
+    rnorm(100, mean = 25, sd = 1.5)
+  )
+)
+
+ggplot(multimodal_data, aes(x = x, fill = group)) +
+  geom_histogram(alpha = 0.6, bins = 25, position = "identity") +
+  theme_minimal() +
+  labs(
+    title = "Multimodal predictor distribution",
+    subtitle = "The pooled distribution is actually a mixture of two groups",
+    x = "Predictor x",
+    y = "Count"
+  )
+```
+
+If we ignore the groups, we may fit one global trend that mostly reflects group separation rather than a true within-group relationship.
+
+```{r}
+ggplot(multimodal_data, aes(x = x, y = y)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  theme_minimal() +
+  labs(
+    title = "One global regression line",
+    subtitle = "The line mostly captures differences between groups",
+    x = "Predictor x",
+    y = "Target y")
+```
+
+Now color by group:
+
+```{r}
+ggplot(multimodal_data, aes(x = x, y = y, color = group)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Group-wise regression lines",
+    subtitle = "Within each group, the relationship can be different from the pooled trend",
+    x = "Predictor x",
+    y = "Target y")
+```
+
+
+## Why this matters for real data
+
+In biological, chemical, and biomedical datasets, groups may represent:
+
+- cell type;
+- sex;
+- species;
+- organ;
+- batch;
+- lab;
+- dose group;
+- treatment protocol;
+- disease status.
+
+A pooled regression may be technically correct but scientifically misleading.
+
+Before trusting a regression model, always ask:
+
+1. Are there meaningful subgroups?
+2. Does the target distribution look multimodal?
+3. Does the predictor distribution look multimodal?
+4. Do relationships change after coloring by group?
+5. Should group be added as a predictor?
+6. Should we test an interaction term?
+
+##Simpson's paradox with `mpg`
+
+In the `mpg` dataset, check whether the relationship between `displ` and `hwy` changes by vehicle `class`.
+
+```{r}
+ggplot(mpg, aes(x = displ, y = hwy)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  theme_minimal() +
+  labs(
+    title = "Pooled relationship between displacement and highway MPG",
+    x = "Engine displacement",
+    y = "Highway MPG"
+  )
+```
+
+```{r}
+ggplot(mpg, aes(x = displ, y = hwy, color = class)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Relationship between displacement and highway MPG by class",
+    x = "Engine displacement",
+    y = "Highway MPG"
+  )
+```
+
+Fit and compare:
+
+```{r}
+mpg_pooled <- lm(hwy ~ displ, data = mpg)
+mpg_group_adjusted <- lm(hwy ~ displ + class, data = mpg)
+mpg_interaction <- lm(hwy ~ displ * class, data = mpg)
+
+glance(mpg_pooled)
+glance(mpg_group_adjusted)
+glance(mpg_interaction)
+```
+
+
+# 5. Multiple Linear Regression
+
+Now we use several predictors.
+
+```{r}
+model_multiple <- lm(
+  hwy ~ displ + cyl + drv + class + year, data = mpg)
+
+summary(model_multiple)
+```
+
+
+
+```{r}
+# pandas equivalent:
+# model = sm.OLS.from_formula("hwy ~ displ + cyl + C(drv) + C(class) + year", data=df).fit()
+# print(model.summary())
+```
+
+
+R automatically converts categorical predictors into dummy variables.
+A categorical variable with 3 levels becomes several comparison terms in the model.
+
+```{r}
+mpg %>%
+  distinct(drv)
+```
+
+```{r}
+tidy(model_multiple)
+```
+
+
+Important values:
+- `r.squared`: explained variance;
+- `adj.r.squared`: R² adjusted for number of predictors;
+- `AIC`: model quality criterion;
+- `BIC`: stricter model quality criterion;
+- `p.value`: global model p-value.
+
+
+# 7. Data Transformation
+
+Sometimes the raw variables are not ideal for linear regression.
+
+Transformations can help when:
+
+- relationships are nonlinear;
+- residuals are not normally distributed;
+- variance changes with the fitted value;
+- predictors are on very different scales.
+
+---
+
+## Log transformation
+
+```{r}
+mpg_transformed <- mpg %>%
+  mutate(
+    log_displ = log(displ))
+
+model_log <- lm(hwy ~ log_displ, data = mpg_transformed)
+
+summary(model_log)
+```
+
+
+```{r}
+ggplot(mpg_transformed, aes(x = log_displ, y = hwy)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm") +
+  theme_minimal()
+```
+
+---
+
+## Scaling numeric predictors
+
+Scaling does not usually change model predictions, but it makes coefficients easier to compare.
+
+```{r}
+mpg_scaled <- mpg %>%
+  mutate(
+    displ_scaled = as.numeric(scale(displ)),
+    cyl_scaled = as.numeric(scale(cyl)),
+    year_scaled = as.numeric(scale(year))
+  )
+
+model_scaled <- lm(
+  hwy ~ displ_scaled + cyl_scaled + year_scaled,
+  data = mpg_scaled
+)
+
+summary(model_scaled)
+```
+
+
+# 8. Forward and Backward Selection
+
+Model selection helps choose a smaller model from a larger set of possible predictors.
+
+Common goals:
+
+- reduce unnecessary predictors;
+- avoid overfitting;
+- improve interpretability;
+- improve prediction on new data.
+
+Here we use `step()`, which performs AIC-based model selection.
+
+
+## Full and null models
+
+```{r}
+full_model <- lm(
+  hwy ~ displ + cyl + drv + class + year + fl + trans,
+  data = mpg)
+
+null_model <- lm(hwy ~ 1, data = mpg)
+```
+
+
+## Backward selection
+
+Backward selection starts with the full model and removes predictors.
+
+```{r}
+backward_model <- step(
+  full_model,
+  direction = "backward",
+  trace = FALSE)
+
+summary(backward_model)
+```
+
+
+## Forward selection
+
+Forward selection starts with the null model and adds predictors.
+
+```{r}
+forward_model <- step(
+  null_model,
+  scope = formula(full_model),
+  direction = "forward",
+  trace = FALSE)
+
+summary(forward_model)
+```
+
+---
+
+## Both-direction selection
+
+```{r}
+both_model <- step(
+  null_model,
+  scope = formula(full_model),
+  direction = "both",
+  trace = FALSE)
+
+summary(both_model)
+```
+
+
+## Comparing selected models
+
+```{r}
+model_comparison <- tibble(
+  model = c("full", "backward", "forward", "both"),
+  adj_r_squared = c(
+    glance(full_model)$adj.r.squared,
+    glance(backward_model)$adj.r.squared,
+    glance(forward_model)$adj.r.squared,
+    glance(both_model)$adj.r.squared
+  ),
+  AIC = c(
+    AIC(full_model),
+    AIC(backward_model),
+    AIC(forward_model),
+    AIC(both_model)))
+
+model_comparison %>%
+  arrange(AIC)
+```
+
+
+# 9. Polynomial Regression
+
+The relationship between engine size and highway MPG is not perfectly linear.
+
+Polynomial regression lets us model curves while still using linear regression machinery.
+
+---
+
+## Quadratic model
+
+```{r}
+model_poly2 <- lm(
+  hwy ~ poly(displ, 2),
+  data = mpg)
+
+summary(model_poly2)
+```
+
+```{r}
+# pandas equivalent:
+# df["displ2"] = df["displ"] ** 2
+# model = sm.OLS.from_formula("hwy ~ displ + displ2", data=df).fit()
+```
+
+
+```{r}
+ggplot(mpg, aes(x = displ, y = hwy)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(
+    method = "lm",
+    formula = y ~ poly(x, 2),
+    se = TRUE
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Polynomial regression: quadratic fit",
+    x = "Engine displacement",
+    y = "Highway MPG")
+```
+
+---
+
+## Comparing linear and polynomial models
+
+```{r}
+model_linear <- lm(hwy ~ displ, data = mpg)
+model_poly3 <- lm(hwy ~ poly(displ, 3), data = mpg)
+
+tibble(
+  model = c("linear", "quadratic", "cubic"),
+  adj_r_squared = c(
+    glance(model_linear)$adj.r.squared,
+    glance(model_poly2)$adj.r.squared,
+    glance(model_poly3)$adj.r.squared
+  ),
+  AIC = c(
+    AIC(model_linear),
+    AIC(model_poly2),
+    AIC(model_poly3)))
+```
+
+## Important warning
+
+A more complex model can fit the training data better but perform worse on new data.
+
+This is overfitting.
+
+Polynomial regression should be evaluated using test data or cross-validation, not only visual fit.
+
+---
+
+# 10. Mini Challenge
+
+Build the best linear regression model you can for predicting `hwy`.
+
+Rules:
+
+- use only variables from `mpg`;
+- do not use `cty`, because it is too close to the target;
+- try at least three models;
+- compare them by adjusted R², AIC, and test RMSE;
+- inspect residual plots for your final model.
