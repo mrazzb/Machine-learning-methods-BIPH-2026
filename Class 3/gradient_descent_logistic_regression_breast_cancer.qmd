@@ -1,0 +1,936 @@
+---
+title: "Practical: Gradient Descent and Logistic Regression"
+subtitle: "Optimization, Breast Cancer Wisconsin classification, train/test split, and metrics"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+
+# Setup
+
+```{r}
+library(tidyverse)
+library(broom)
+library(yardstick)
+library(pROC)
+library(mlbench)
+```
+
+# pandas equivalent:
+# import pandas as pd
+# import numpy as np
+# import seaborn as sns
+# import matplotlib.pyplot as plt
+# import statsmodels.api as sm
+# from sklearn.model_selection import train_test_split
+# from sklearn.datasets import load_breast_cancer
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_curve, roc_auc_score
+
+
+# 1. Why do we need gradient descent?
+
+Many machine learning models are trained by finding parameters that minimize a loss function.
+
+In linear regression, we write:
+
+$$
+\hat{y} = \beta_0 + \beta_1x
+$$
+
+But how do we find the best values of `beta_0` and `beta_1`?
+
+We need a **loss function**.
+
+For regression, a common loss function is mean squared error:
+
+$$
+MSE = \frac{1}{n}\sum(y_i - \hat{y}_i)^2
+$$
+
+The model tries to find parameters that make this loss as small as possible.
+
+---
+
+## Visual idea of a loss function
+
+Let us imagine that we have only one parameter, `theta`.
+
+The loss function is:
+
+$$
+J(\theta) = (\theta - 2)^2 + 1
+$$
+
+The minimum is at `theta = 2`.
+
+```{r}
+loss_data <- tibble(
+  theta = seq(-5, 8, length.out = 300),
+  loss = (theta - 2)^2 + 1
+)
+
+ggplot(loss_data, aes(x = theta, y = loss)) +
+  geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = 2, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(
+    title = "A simple loss function",
+    subtitle = "The best parameter value is where the loss is minimal",
+    x = "Parameter theta",
+    y = "Loss"
+  )
+```
+
+---
+
+# 2. Gradient descent intuition
+
+Gradient descent is an iterative optimization method.
+
+The update rule is:
+
+$$
+\theta_{new} = \theta_{old} - \eta \nabla J(\theta)
+$$
+
+Where:
+
+- `theta` is the parameter;
+- `eta` is the learning rate;
+- `gradient` is the slope of the loss function;
+- each step moves the parameter toward lower loss.
+
+For our toy loss function:
+
+$$
+J(\theta) = (\theta - 2)^2 + 1
+$$
+
+the gradient is:
+
+$$
+\nabla J(\theta) = 2(\theta - 2)
+$$
+
+---
+
+## Manual gradient descent simulation
+
+```{r}
+theta <- -4
+learning_rate <- 0.2
+n_steps <- 15
+
+gd_path <- tibble(
+  step = 0,
+  theta = theta,
+  loss = (theta - 2)^2 + 1
+)
+
+for (i in 1:n_steps) {
+  gradient <- 2 * (theta - 2)
+  theta <- theta - learning_rate * gradient
+
+  gd_path <- bind_rows(
+    gd_path,
+    tibble(
+      step = i,
+      theta = theta,
+      loss = (theta - 2)^2 + 1
+    )
+  )
+}
+
+gd_path
+```
+
+```{r}
+ggplot(loss_data, aes(x = theta, y = loss)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(
+    data = gd_path,
+    aes(x = theta, y = loss, color = step),
+    size = 3
+  ) +
+  geom_path(
+    data = gd_path,
+    aes(x = theta, y = loss),
+    arrow = arrow(length = unit(0.15, "cm")),
+    linewidth = 0.8
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Gradient descent path",
+    subtitle = "The parameter moves step by step toward the minimum",
+    x = "Parameter theta",
+    y = "Loss",
+    color = "Step"
+  )
+```
+
+---
+
+## Learning rate effect
+
+The learning rate controls step size.
+
+If it is too small, optimization is slow.  
+If it is too large, optimization can overshoot or diverge.
+
+```{r}
+simulate_gd <- function(start_theta, learning_rate, n_steps = 15) {
+  theta <- start_theta
+
+  out <- tibble(
+    step = 0,
+    theta = theta,
+    loss = (theta - 2)^2 + 1,
+    learning_rate = learning_rate
+  )
+
+  for (i in 1:n_steps) {
+    gradient <- 2 * (theta - 2)
+    theta <- theta - learning_rate * gradient
+
+    out <- bind_rows(
+      out,
+      tibble(
+        step = i,
+        theta = theta,
+        loss = (theta - 2)^2 + 1,
+        learning_rate = learning_rate
+      )
+    )
+  }
+
+  out
+}
+
+gd_rates <- bind_rows(
+  simulate_gd(-4, 0.05),
+  simulate_gd(-4, 0.2),
+  simulate_gd(-4, 0.9)
+)
+
+ggplot(gd_rates, aes(x = step, y = loss, color = as.factor(learning_rate))) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Effect of learning rate",
+    x = "Gradient descent step",
+    y = "Loss",
+    color = "Learning rate"
+  )
+```
+
+
+
+# 3. From regression to classification
+
+Linear regression predicts numeric values:
+
+$$
+\hat{y} = \beta_0 + \beta_1x
+$$
+
+But classification needs class labels.
+
+For example:
+
+- benign / malignant;
+- disease / no disease;
+- spam / not spam;
+- responder / non-responder.
+
+If we use linear regression for binary classes, it can predict invalid values like:
+
+- `-0.2`
+- `1.4`
+
+Instead, we want a model that predicts probabilities between 0 and 1.
+
+---
+
+# 4. Sigmoid function
+
+The sigmoid function converts any real number into a value between 0 and 1.
+
+$$
+\sigma(z) = \frac{1}{1 + e^{-z}}
+$$
+
+```{r}
+sigmoid_data <- tibble(
+  z = seq(-10, 10, length.out = 300),
+  probability = 1 / (1 + exp(-z))
+)
+
+ggplot(sigmoid_data, aes(x = z, y = probability)) +
+  geom_line(linewidth = 1.3, color = "steelblue") +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Sigmoid function",
+    subtitle = "Any real value is transformed into a probability",
+    x = "Linear predictor z",
+    y = "Predicted probability"
+  )
+```
+
+---
+
+# 5. Logistic regression model
+
+Logistic regression has two parts.
+
+First, a linear predictor:
+
+$$
+z = \beta_0 + \beta_1x_1 + \beta_2x_2 + ...
+$$
+
+Then the sigmoid transformation:
+
+$$
+P(Y = 1) = \frac{1}{1 + e^{-z}}
+$$
+
+So logistic regression is still a linear model, but it predicts probability.
+
+For binary classification, logistic regression is usually fitted by minimizing **log loss**, not MSE.
+
+---
+
+# 6. Real dataset: Breast Cancer Wisconsin
+
+We will use the Breast Cancer Wisconsin dataset from the `mlbench` package.
+
+Each row describes a cell sample.  
+The target is whether the sample is:
+
+- benign;
+- malignant.
+
+```{r}
+data(BreastCancer)
+
+bc_raw <- BreastCancer %>%
+  as_tibble()
+
+glimpse(bc_raw)
+```
+
+---
+
+## Dataset cleaning
+
+The original dataset has an ID column and some variables stored as factors.
+
+We will:
+
+1. remove the ID column;
+2. convert predictors to numeric;
+3. remove rows with missing values;
+4. define the positive class as `malignant`.
+
+```{r}
+bc <- bc_raw %>%
+  select(-Id) %>%
+  mutate(
+    Class = factor(Class, levels = c("malignant", "benign"))
+  ) %>%
+  mutate(
+    across(
+      .cols = -Class,
+      .fns = ~ as.numeric(as.character(.x))
+    )
+  ) %>%
+  drop_na()
+
+glimpse(bc)
+```
+
+# pandas equivalent:
+# data = load_breast_cancer()
+# df = pd.DataFrame(data.data, columns=data.feature_names)
+# df["diagnosis"] = data.target
+# df["diagnosis"] = np.where(df["diagnosis"] == 0, "malignant", "benign")
+
+---
+
+## Target class balance
+
+```{r}
+bc %>%
+  count(Class) %>%
+  mutate(percent = n / sum(n) * 100)
+```
+
+```{r}
+ggplot(bc, aes(x = Class, fill = Class)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(
+    title = "Class balance",
+    x = "Diagnosis",
+    y = "Count"
+  )
+```
+
+---
+
+## Exploratory visualization
+
+```{r}
+ggplot(bc, aes(x = Cl.thickness, fill = Class)) +
+  geom_histogram(alpha = 0.6, bins = 10, position = "identity") +
+  theme_minimal() +
+  labs(
+    title = "Clump thickness by diagnosis",
+    x = "Clump thickness",
+    y = "Count"
+  )
+```
+
+```{r}
+ggplot(bc, aes(x = Class, y = Cell.size, fill = Class)) +
+  geom_boxplot(alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Cell size by diagnosis",
+    x = "Diagnosis",
+    y = "Uniformity of cell size"
+  )
+```
+
+```{r}
+ggplot(bc, aes(x = Cell.size, y = Cell.shape, color = Class)) +
+  geom_point(alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Cell size vs cell shape",
+    x = "Uniformity of cell size",
+    y = "Uniformity of cell shape"
+  )
+```
+
+---
+
+# 7. Why train/test split is necessary
+
+A model can look very good on the same data used to train it.
+This can happen because the model has already seen those examples.
+If we evaluate only on training data, we answer:
+But in real work, we usually care about:
+How well will the model work on new unseen samples?
+
+So we split data into:
+- **training set**: used to fit model parameters;
+- **test set**: kept aside and used only for final evaluation.
+This simulates future data.
+
+
+## Data leakage
+
+Data leakage happens when information from the test set accidentally influences model training.
+
+Examples:
+
+- selecting predictors after looking at test performance;
+- scaling using all data before splitting;
+- imputing missing values using all data before splitting;
+- choosing threshold based on test set repeatedly;
+- duplicate samples appearing in both train and test.
+
+
+## Train/test split
+
+We should preserve class proportions in both sets.  
+For simplicity, we do a stratified split manually.
+
+```{r}
+set.seed(2026)
+
+bc_train <- bc %>%
+  group_by(Class) %>%
+  slice_sample(prop = 0.75) %>%
+  ungroup()
+
+bc_test <- bc %>%
+  anti_join(bc_train, by = names(bc))
+
+bc_train %>% count(Class)
+bc_test %>% count(Class)
+```
+
+# pandas equivalent:
+# train, test = train_test_split(df, test_size=0.25, random_state=42, stratify=df["diagnosis"])
+
+---
+
+# 8. Fit logistic regression
+
+We fit the model using `glm()` with `family = binomial`.
+
+The positive class is the first level of `Class`, which we set to `malignant`.
+
+```{r}
+logistic_model <- glm(
+  Class ~ Cl.thickness + Cell.size + Cell.shape + Marg.adhesion + Bare.nuclei,
+  data = bc_train,
+  family = binomial)
+
+summary(logistic_model)
+```
+
+# pandas equivalent:
+# model = sm.Logit.from_formula(
+#     "diagnosis_binary ~ clump_thickness + cell_size + cell_shape + marginal_adhesion + bare_nuclei",
+#     data=train
+# ).fit()
+
+---
+
+## Coefficients as odds ratios
+
+Logistic regression coefficients are in log-odds units.
+
+To convert them to odds ratios:
+
+```{r}
+tidy(logistic_model) %>%
+  mutate(odds_ratio = exp(estimate))
+```
+
+Interpretation:
+
+- odds ratio above 1 means higher odds of the positive class;
+- odds ratio below 1 means lower odds of the positive class;
+- the effect is conditional on other variables in the model.
+
+---
+
+# 9. Predicted probabilities
+
+```{r}
+test_predictions <- bc_test %>%
+  mutate(
+    predicted_probability = predict(
+      logistic_model,
+      newdata = bc_test,
+      type = "response"
+    )
+  )
+
+test_predictions %>%
+  select(Class, predicted_probability) %>%
+  head()
+```
+
+Important:
+
+Since `Class` is ordered as `malignant`, `benign`, the probability is interpreted as probability of `malignant`.
+
+---
+
+## Probability visualization
+
+```{r}
+ggplot(test_predictions, aes(x = predicted_probability, y = Class, color = Class)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_vline(xintercept = 0.5, linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Predicted probabilities on the test set",
+    subtitle = "Dashed line shows threshold = 0.5",
+    x = "Predicted probability of malignant diagnosis",
+    y = "True class"
+  )
+```
+
+---
+
+# 10. Thresholds
+
+A logistic regression model returns probabilities.
+
+To convert probabilities into classes, we choose a threshold.
+
+Common default:
+
+$$
+P(Y = 1) \geq 0.5 \Rightarrow positive
+$$
+
+Here, positive means `malignant`.
+
+```{r}
+test_predictions <- test_predictions %>%
+  mutate(
+    predicted_class = if_else(
+      predicted_probability >= 0.5,
+      "malignant",
+      "benign"
+    ),
+    predicted_class = factor(predicted_class, levels = c("malignant", "benign"))
+  )
+
+test_predictions %>%
+  select(Class, predicted_probability, predicted_class) %>%
+  head()
+```
+
+---
+
+# 11. Confusion matrix
+
+A confusion matrix compares true labels and predicted labels.
+
+For binary classification:
+
+| | Predicted positive | Predicted negative |
+|---|---:|---:|
+| Actual positive | TP | FN |
+| Actual negative | FP | TN |
+
+In this case:
+
+- positive = malignant;
+- negative = benign.
+
+```{r}
+confusion <- table(
+  Truth = test_predictions$Class,
+  Prediction = test_predictions$predicted_class
+)
+
+confusion
+```
+
+---
+
+## Confusion matrix heatmap
+
+```{r}
+as.data.frame(confusion) %>%
+  ggplot(aes(x = Prediction, y = Truth, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 8) +
+  theme_minimal() +
+  labs(
+    title = "Confusion matrix",
+    x = "Predicted class",
+    y = "True class",
+    fill = "Count"
+  )
+```
+
+---
+
+# 12. Classification metrics
+
+Let us define the positive class as:
+
+- `malignant`
+
+```{r}
+metric_data <- test_predictions %>%
+  mutate(
+    Class = factor(Class, levels = c("malignant", "benign")),
+    predicted_class = factor(predicted_class, levels = c("malignant", "benign"))
+  )
+```
+
+---
+
+## Accuracy
+
+Accuracy answers:
+
+> What fraction of all predictions are correct?
+
+$$
+Accuracy = \frac{TP + TN}{TP + TN + FP + FN}
+$$
+
+```{r}
+accuracy(metric_data, truth = Class, estimate = predicted_class)
+```
+
+Accuracy can be misleading when classes are imbalanced.
+
+---
+
+## Precision
+
+Precision answers:
+
+> When the model predicts malignant, how often is it correct?
+
+$$
+Precision = \frac{TP}{TP + FP}
+$$
+
+```{r}
+precision(metric_data, truth = Class, estimate = predicted_class)
+```
+
+---
+
+## Recall / sensitivity
+
+Recall answers:
+
+> Of all truly malignant samples, how many did the model find?
+
+$$
+Recall = \frac{TP}{TP + FN}
+$$
+
+```{r}
+recall(metric_data, truth = Class, estimate = predicted_class)
+```
+
+In medical screening, recall is often very important because false negatives can be dangerous.
+
+---
+
+## Specificity
+
+Specificity answers:
+
+> Of all truly benign samples, how many were correctly identified as benign?
+
+$$
+Specificity = \frac{TN}{TN + FP}
+$$
+
+```{r}
+spec(metric_data, truth = Class, estimate = predicted_class)
+```
+
+---
+
+## F1-score
+
+F1-score balances precision and recall.
+
+$$
+F1 = 2 \cdot \frac{Precision \cdot Recall}{Precision + Recall}
+$$
+
+```{r}
+f_meas(metric_data, truth = Class, estimate = predicted_class)
+```
+
+---
+
+## Metric table
+
+```{r}
+classification_metrics <- metric_set(accuracy, precision, recall, spec, f_meas)
+
+classification_metrics(
+  metric_data,
+  truth = Class,
+  estimate = predicted_class
+)
+```
+
+---
+
+# 13. Threshold tradeoff
+
+Changing the threshold changes the metrics.
+
+Lower threshold:
+
+- more malignant predictions;
+- higher recall;
+- more false positives.
+
+Higher threshold:
+
+- fewer malignant predictions;
+- higher precision;
+- more false negatives.
+
+```{r}
+threshold_results <- tibble(
+  threshold = seq(0.1, 0.9, by = 0.1)
+) %>%
+  mutate(
+    predictions = map(
+      threshold,
+      ~ test_predictions %>%
+        mutate(
+          predicted_class = factor(
+            if_else(predicted_probability >= .x, "malignant", "benign"),
+            levels = c("malignant", "benign")
+          ),
+          Class = factor(Class, levels = c("malignant", "benign"))
+        )
+    ),
+    accuracy = map_dbl(predictions, ~ accuracy(.x, truth = Class, estimate = predicted_class)$.estimate),
+    precision = map_dbl(predictions, ~ precision(.x, truth = Class, estimate = predicted_class)$.estimate),
+    recall = map_dbl(predictions, ~ recall(.x, truth = Class, estimate = predicted_class)$.estimate),
+    specificity = map_dbl(predictions, ~ spec(.x, truth = Class, estimate = predicted_class)$.estimate),
+    f1 = map_dbl(predictions, ~ f_meas(.x, truth = Class, estimate = predicted_class)$.estimate)
+  ) %>%
+  select(-predictions)
+
+threshold_results
+```
+
+```{r}
+threshold_results %>%
+  pivot_longer(
+    cols = c(accuracy, precision, recall, specificity, f1),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = threshold, y = value, color = metric)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Effect of classification threshold",
+    subtitle = "Lower threshold usually increases recall but decreases precision",
+    x = "Threshold",
+    y = "Metric value",
+    color = "Metric"
+  )
+```
+
+---
+
+# 14. ROC curve and AUC
+
+ROC curve shows performance over all possible thresholds.
+
+It plots:
+
+- true positive rate;
+- false positive rate.
+
+AUC summarizes the ROC curve.
+
+AUC interpretation:
+
+- 0.5: random classifier;
+- 0.7: acceptable;
+- 0.8: good;
+- 0.9: excellent;
+- 1.0: perfect.
+
+```{r}
+roc_obj <- roc(
+  response = test_predictions$Class,
+  predictor = test_predictions$predicted_probability,
+  levels = c("benign", "malignant")
+)
+
+auc(roc_obj)
+```
+
+```{r}
+plot(
+  roc_obj,
+  col = "steelblue",
+  lwd = 3,
+  main = "ROC curve for Breast Cancer logistic regression model"
+)
+
+abline(a = 0, b = 1, lty = 2, col = "gray")
+```
+
+---
+
+## Manual ROC-style threshold table
+
+```{r}
+roc_threshold_table <- tibble(
+  threshold = seq(0.05, 0.95, by = 0.05)
+) %>%
+  mutate(
+    predicted_class = map(
+      threshold,
+      ~ if_else(test_predictions$predicted_probability >= .x, "malignant", "benign")
+    ),
+    tpr = map_dbl(
+      predicted_class,
+      ~ sum(.x == "malignant" & test_predictions$Class == "malignant") /
+        sum(test_predictions$Class == "malignant")
+    ),
+    fpr = map_dbl(
+      predicted_class,
+      ~ sum(.x == "malignant" & test_predictions$Class == "benign") /
+        sum(test_predictions$Class == "benign")
+    )
+  ) %>%
+  select(-predicted_class)
+
+roc_threshold_table
+```
+
+
+
+# 15. Comparing training vs test performance
+
+Now we show why evaluating only on training data is risky.
+
+```{r}
+train_predictions <- bc_train %>%
+  mutate(
+    predicted_probability = predict(
+      logistic_model,
+      newdata = bc_train,
+      type = "response"
+    ),
+    predicted_class = factor(
+      if_else(predicted_probability >= 0.5, "malignant", "benign"),
+      levels = c("malignant", "benign")
+    ),
+    Class = factor(Class, levels = c("malignant", "benign"))
+  )
+
+train_metrics <- classification_metrics(
+  train_predictions,
+  truth = Class,
+  estimate = predicted_class
+) %>%
+  mutate(dataset = "train")
+
+test_metrics <- classification_metrics(
+  metric_data,
+  truth = Class,
+  estimate = predicted_class
+) %>%
+  mutate(dataset = "test")
+
+bind_rows(train_metrics, test_metrics) %>%
+  select(dataset, .metric, .estimate) %>%
+  arrange(.metric, dataset)
+```
+
+Usually, training performance is equal to or better than test performance.
+
+If training performance is much better than test performance, this suggests overfitting.
+
+
+
+# Homework: to build the best possible logisitic regression model on wisconsin data
+
+
+```{r}
+
+```
