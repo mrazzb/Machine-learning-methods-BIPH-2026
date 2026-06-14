@@ -1,0 +1,1289 @@
+---
+title: "Practical: PCA and Dimensionality Reduction"
+subtitle: "Wisconsin Diagnostic Breast Cancer dataset, feature correlation, PCA, t-SNE/UMAP, and logistic regression"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+
+```{r}
+library(tidyverse)
+library(broom)
+library(yardstick)
+library(pROC)
+```
+
+
+# pandas equivalent:
+# import pandas as pd
+# import numpy as np
+# from sklearn.datasets import load_breast_cancer
+# from sklearn.preprocessing import StandardScaler
+# from sklearn.decomposition import PCA
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+# from sklearn.model_selection import train_test_split
+
+---
+
+# 1. Why dimensionality reduction?
+
+In the previous practical, we used logistic regression for binary classification.
+
+That works well when we have a small number of predictors.
+
+But real biomedical datasets often contain many variables:
+
+- gene expression values;
+- protein markers;
+- microscopy-derived features;
+- radiomics features;
+- chemical descriptors;
+- image embeddings;
+- omics measurements.
+
+Problems with many features:
+
+1. Visualization becomes impossible.
+2. Many variables are correlated.
+3. Models become harder to interpret.
+4. Noise can accumulate.
+5. Training can become slower.
+6. Overfitting becomes more likely.
+7. Some methods perform poorly in high dimensions.
+
+Dimensionality reduction tries to replace many original features with fewer new features while preserving important information.
+
+
+# 2. Dataset: Wisconsin Diagnostic Breast Cancer
+
+We will use the Wisconsin Diagnostic Breast Cancer dataset.
+
+Each row describes a breast mass sample.
+
+The target variable is:
+
+- `M`: malignant;
+- `B`: benign.
+
+The predictors are 30 quantitative features computed from digitized images of cell nuclei.
+
+
+## Load data
+
+```{r}
+url <- "https://www.kaggle.com/api/v1/datasets/download/yasserh/breast-cancer-dataset"
+
+wdbc_raw <- read_csv(url)
+
+glimpse(wdbc_raw)
+```
+
+
+## Clean column names
+
+```{r}
+names(wdbc_raw) <- names(wdbc_raw) %>%
+  str_replace_all(" ", "_") %>%
+  str_replace_all("-", "_") %>%
+  str_replace_all("\\.", "_") %>%
+  str_to_lower()
+
+wdbc <- wdbc_raw
+
+glimpse(wdbc)
+```
+
+---
+
+## Identify target and predictors
+
+```{r}
+wdbc <- wdbc %>%
+  mutate(
+    diagnosis = factor(diagnosis, levels = c("M", "B"))
+  )
+
+wdbc %>%
+  count(diagnosis)
+```
+
+Important:
+
+We set the first level to `M`, so in later classification metrics, malignant is treated as the positive class.
+
+---
+
+## Remove ID column
+
+```{r}
+wdbc_model_data <- wdbc %>%
+  select(-id)
+
+glimpse(wdbc_model_data)
+```
+
+---
+
+# 3. Initial exploration
+
+## Class balance
+
+```{r}
+wdbc_model_data %>%
+  count(diagnosis) %>%
+  mutate(percent = n / sum(n) * 100)
+```
+
+```{r}
+ggplot(wdbc_model_data, aes(x = diagnosis, fill = diagnosis)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(
+    title = "Class balance",
+    x = "Diagnosis",
+    y = "Count"
+  )
+```
+
+---
+
+## Number of features
+
+```{r}
+n_features <- wdbc_model_data %>%
+  select(-diagnosis) %>%
+  ncol()
+
+n_features
+```
+
+Question:
+
+> Can we easily visualize 30 features at once?
+
+No. We can only easily plot 2 or 3 dimensions at a time.
+
+---
+
+## Example two-feature plot
+
+```{r}
+ggplot(
+  wdbc_model_data,
+  aes(x = radius_mean, y = texture_mean, color = diagnosis)
+) +
+  geom_point(alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Only two features from a 30-feature dataset",
+    x = "Mean radius",
+    y = "Mean texture",
+    color = "Diagnosis"
+  )
+```
+
+This plot ignores 28 other variables.
+
+Dimensionality reduction gives us a way to use all variables but visualize them in 2D.
+
+---
+
+# 4. Too many features in logistic regression
+
+Let us start with a logistic regression model using all original features.
+
+---
+
+## Train/test split
+
+We use a train/test split because we want to evaluate performance on unseen data.
+
+If we test a model on the same data used for training, performance is often too optimistic.
+
+The test set simulates new future samples.
+
+```{r}
+set.seed(42)
+
+train_data <- wdbc_model_data %>%
+  group_by(diagnosis) %>%
+  slice_sample(prop = 0.75) %>%
+  ungroup()
+
+test_data <- wdbc_model_data %>%
+  anti_join(train_data, by = names(wdbc_model_data))
+
+train_data %>% count(diagnosis)
+test_data %>% count(diagnosis)
+```
+
+# pandas equivalent:
+# train, test = train_test_split(df, test_size=0.25, random_state=42, stratify=df["diagnosis"])
+
+---
+
+## Full logistic regression model
+
+```{r}
+full_logistic_model <- glm(
+  diagnosis ~ .,
+  data = train_data,
+  family = binomial
+)
+
+summary(full_logistic_model)
+```
+
+Problems:
+
+- many coefficients;
+- difficult interpretation;
+- many predictors are correlated;
+- coefficients may be unstable;
+- warning messages may occur because classes are very separable.
+
+---
+
+## Evaluate full model
+
+```{r}
+full_test_predictions <- test_data %>%
+  mutate(
+    prob_malignant = predict(
+      full_logistic_model,
+      newdata = test_data,
+      type = "response"
+    ),
+    predicted_class = factor(
+      if_else(prob_malignant >= 0.5, "M", "B"),
+      levels = c("M", "B")
+    )
+  )
+
+full_metric_data <- full_test_predictions %>%
+  mutate(
+    diagnosis = factor(diagnosis, levels = c("M", "B")),
+    predicted_class = factor(predicted_class, levels = c("M", "B"))
+  )
+
+metric_set(accuracy, precision, recall, spec, f_meas)(
+  full_metric_data,
+  truth = diagnosis,
+  estimate = predicted_class
+)
+```
+
+```{r}
+full_auc <- roc(
+  response = full_test_predictions$diagnosis,
+  predictor = full_test_predictions$prob_malignant,
+  levels = c("B", "M")
+) %>%
+  auc()
+
+full_auc
+```
+
+---
+
+# 5. Correlation and redundancy
+
+Many WDBC variables measure related properties.
+
+For example:
+
+- radius;
+- perimeter;
+- area;
+
+are usually strongly correlated.
+
+---
+
+## Correlation matrix
+
+```{r}
+feature_data <- wdbc_model_data %>%
+  select(-diagnosis)
+
+cor_matrix <- cor(feature_data)
+
+cor_matrix[1:5, 1:5]
+```
+
+---
+
+## Correlation heatmap
+
+```{r}
+cor_long <- cor_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("feature_1") %>%
+  pivot_longer(
+    cols = -feature_1,
+    names_to = "feature_2",
+    values_to = "correlation"
+  )
+
+ggplot(cor_long, aes(x = feature_1, y = feature_2, fill = correlation)) +
+  geom_tile() +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 6),
+    axis.text.y = element_text(size = 6)
+  ) +
+  labs(
+    title = "Correlation heatmap of original features",
+    x = NULL,
+    y = NULL,
+    fill = "Correlation"
+  )
+```
+
+Interpretation:
+
+- large blocks of high correlation suggest redundancy;
+- PCA can compress correlated variables into fewer components.
+
+---
+
+# 6. PCA intuition
+
+PCA finds new axes called **principal components**.
+
+These components are:
+
+- linear combinations of original variables;
+- ordered by how much variance they explain;
+- uncorrelated with each other.
+
+PC1 explains the most variance.  
+PC2 explains the next most variance, while being orthogonal to PC1.
+
+---
+
+## Synthetic example: two correlated variables
+
+```{r}
+set.seed(123)
+
+pca_toy <- tibble(
+  x = rnorm(200),
+  y = x * 1.4 + rnorm(200, sd = 0.4)
+)
+
+ggplot(pca_toy, aes(x = x, y = y)) +
+  geom_point(alpha = 0.7) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Two correlated variables",
+    subtitle = "Most variation lies along one diagonal direction"
+  )
+```
+
+```{r}
+toy_pca <- prcomp(pca_toy, center = TRUE, scale. = TRUE)
+
+summary(toy_pca)
+```
+
+The first principal component captures most of the variance.
+
+---
+
+## Toy PCA scores
+
+```{r}
+toy_scores <- as_tibble(toy_pca$x)
+
+ggplot(toy_scores, aes(x = PC1, y = PC2)) +
+  geom_point(alpha = 0.7) +
+  coord_equal() +
+  theme_minimal() +
+  labs(
+    title = "Same data in PCA coordinates",
+    subtitle = "PC1 captures most variation; PC2 captures remaining variation"
+  )
+```
+
+---
+
+# 7. Scaling before PCA
+
+Scaling is essential when variables have different units or ranges.
+
+Without scaling, variables with large numerical ranges dominate PCA.
+
+```{r}
+feature_data %>%
+  summarise(across(everything(), sd)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "feature",
+    values_to = "sd"
+  ) %>%
+  arrange(desc(sd)) %>%
+  head(10)
+```
+
+Because variables have different scales, we will standardize them.
+
+---
+
+# 8. PCA on WDBC data
+
+Important workflow:
+
+1. Split train/test.
+2. Learn scaling parameters on training data.
+3. Apply the same scaling to test data.
+4. Fit PCA on training data.
+5. Project test data using training PCA.
+
+This avoids test data leakage.
+
+---
+
+## Prepare train and test matrices
+
+```{r}
+x_train <- train_data %>%
+  select(-diagnosis)
+
+x_test <- test_data %>%
+  select(-diagnosis)
+
+y_train <- train_data$diagnosis
+y_test <- test_data$diagnosis
+```
+
+---
+
+## Scale training data
+
+```{r}
+train_means <- x_train %>%
+  summarise(across(everything(), mean))
+
+train_sds <- x_train %>%
+  summarise(across(everything(), sd))
+
+x_train_scaled <- scale(
+  x_train,
+  center = as.numeric(train_means),
+  scale = as.numeric(train_sds)
+)
+
+x_test_scaled <- scale(
+  x_test,
+  center = as.numeric(train_means),
+  scale = as.numeric(train_sds)
+)
+```
+
+# pandas equivalent:
+# scaler = StandardScaler()
+# X_train_scaled = scaler.fit_transform(X_train)
+# X_test_scaled = scaler.transform(X_test)
+
+---
+
+## Run PCA on training data only
+
+```{r}
+pca_model <- prcomp(
+  x_train_scaled,
+  center = FALSE,
+  scale. = FALSE
+)
+
+summary(pca_model)
+```
+
+We already scaled the matrix, so `center = FALSE` and `scale. = FALSE`.
+
+---
+
+# 9. Explained variance
+
+Each principal component explains some fraction of total variance.
+
+```{r}
+explained_variance <- pca_model$sdev^2 / sum(pca_model$sdev^2)
+
+explained_variance_df <- tibble(
+  component = paste0("PC", seq_along(explained_variance)),
+  component_number = seq_along(explained_variance),
+  explained_variance = explained_variance,
+  cumulative_variance = cumsum(explained_variance)
+)
+
+explained_variance_df %>%
+  head(10)
+```
+
+---
+
+## Scree plot
+
+```{r}
+ggplot(explained_variance_df, aes(x = component_number, y = explained_variance)) +
+  geom_col(fill = "steelblue") +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    title = "Scree plot",
+    subtitle = "Variance explained by each principal component",
+    x = "Principal component",
+    y = "Explained variance"
+  )
+```
+
+---
+
+## Cumulative variance plot
+
+```{r}
+ggplot(explained_variance_df, aes(x = component_number, y = cumulative_variance)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0.9, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(
+    title = "Cumulative explained variance",
+    subtitle = "How many PCs are needed to explain 90% of variance?",
+    x = "Number of principal components",
+    y = "Cumulative variance"
+  )
+```
+
+```{r}
+n_pc_90 <- explained_variance_df %>%
+  filter(cumulative_variance >= 0.90) %>%
+  slice(1) %>%
+  pull(component_number)
+
+n_pc_90
+```
+
+---
+
+# 10. PCA visualization
+
+Now we project the training and test sets into PCA coordinates.
+
+```{r}
+train_pca_scores <- as_tibble(predict(pca_model, newdata = x_train_scaled)) %>%
+  mutate(
+    diagnosis = y_train,
+    dataset = "train"
+  )
+
+test_pca_scores <- as_tibble(predict(pca_model, newdata = x_test_scaled)) %>%
+  mutate(
+    diagnosis = y_test,
+    dataset = "test"
+  )
+
+all_pca_scores <- bind_rows(train_pca_scores, test_pca_scores)
+```
+
+---
+
+## PC1 vs PC2
+
+```{r}
+ggplot(all_pca_scores, aes(x = PC1, y = PC2, color = diagnosis, shape = dataset)) +
+  geom_point(alpha = 0.8, size = 2.5) +
+  theme_minimal() +
+  labs(
+    title = "WDBC data projected onto first two principal components",
+    subtitle = "PCA uses all original features to create PC1 and PC2",
+    x = "PC1",
+    y = "PC2",
+    color = "Diagnosis",
+    shape = "Dataset"
+  )
+```
+
+This 2D plot uses information from all 30 original variables.
+
+---
+
+# 11. PCA loadings
+
+PCA loadings tell us how strongly each original variable contributes to each principal component.
+
+```{r}
+loadings_df <- as.data.frame(pca_model$rotation) %>%
+  rownames_to_column("feature") %>%
+  as_tibble()
+
+loadings_df %>%
+  select(feature, PC1, PC2) %>%
+  head()
+```
+
+---
+
+## Top contributors to PC1
+
+```{r}
+loadings_df %>%
+  select(feature, PC1) %>%
+  mutate(abs_loading = abs(PC1)) %>%
+  arrange(desc(abs_loading)) %>%
+  slice(1:10)
+```
+
+```{r}
+loadings_df %>%
+  select(feature, PC1) %>%
+  mutate(abs_loading = abs(PC1)) %>%
+  arrange(desc(abs_loading)) %>%
+  slice(1:10) %>%
+  ggplot(aes(x = reorder(feature, abs_loading), y = abs_loading)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top contributors to PC1",
+    x = "Feature",
+    y = "Absolute loading"
+  )
+```
+
+---
+
+## Top contributors to PC2
+
+```{r}
+loadings_df %>%
+  select(feature, PC2) %>%
+  mutate(abs_loading = abs(PC2)) %>%
+  arrange(desc(abs_loading)) %>%
+  slice(1:10) %>%
+  ggplot(aes(x = reorder(feature, abs_loading), y = abs_loading)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top contributors to PC2",
+    x = "Feature",
+    y = "Absolute loading"
+  )
+```
+
+Discussion:
+
+- PC1 often captures overall tumor/nucleus size and severity-related variation.
+- PC2 may capture a different contrast among shape/texture-related measurements.
+- PCA components are mathematically defined, so interpretation requires caution.
+
+---
+
+# 12. Logistic regression with PCA features
+
+Now we compare:
+
+1. logistic regression using all 30 original features;
+2. logistic regression using first 2 PCs;
+3. logistic regression using first 5 PCs;
+4. logistic regression using first 10 PCs;
+5. logistic regression using enough PCs for 90% variance.
+
+---
+
+## Helper function for model evaluation
+
+```{r}
+evaluate_binary_model <- function(data, truth_col, prob_col, threshold = 0.5) {
+  truth <- data[[truth_col]]
+  prob <- data[[prob_col]]
+
+  pred <- factor(
+    if_else(prob >= threshold, "M", "B"),
+    levels = c("M", "B")
+  )
+
+  eval_data <- tibble(
+    truth = factor(truth, levels = c("M", "B")),
+    estimate = pred,
+    prob = prob
+  )
+
+  metrics <- metric_set(accuracy, precision, recall, spec, f_meas)(
+    eval_data,
+    truth = truth,
+    estimate = estimate
+  )
+
+  auc_value <- roc(
+    response = eval_data$truth,
+    predictor = eval_data$prob,
+    levels = c("B", "M")
+  ) %>%
+    auc() %>%
+    as.numeric()
+
+  metrics %>%
+    select(.metric, .estimate) %>%
+    pivot_wider(names_from = .metric, values_from = .estimate) %>%
+    mutate(auc = auc_value)
+}
+```
+
+---
+
+## Prepare PCA datasets
+
+```{r}
+make_pca_dataset <- function(scores, y, n_pc) {
+  scores %>%
+    select(all_of(paste0("PC", 1:n_pc))) %>%
+    mutate(diagnosis = y)
+}
+
+train_pca_2 <- make_pca_dataset(train_pca_scores, y_train, 2)
+test_pca_2 <- make_pca_dataset(test_pca_scores, y_test, 2)
+
+train_pca_5 <- make_pca_dataset(train_pca_scores, y_train, 5)
+test_pca_5 <- make_pca_dataset(test_pca_scores, y_test, 5)
+
+train_pca_10 <- make_pca_dataset(train_pca_scores, y_train, 10)
+test_pca_10 <- make_pca_dataset(test_pca_scores, y_test, 10)
+
+train_pca_90 <- make_pca_dataset(train_pca_scores, y_train, n_pc_90)
+test_pca_90 <- make_pca_dataset(test_pca_scores, y_test, n_pc_90)
+```
+
+---
+
+## Fit PCA logistic models
+
+```{r}
+model_pca_2 <- glm(diagnosis ~ ., data = train_pca_2, family = binomial)
+model_pca_5 <- glm(diagnosis ~ ., data = train_pca_5, family = binomial)
+model_pca_10 <- glm(diagnosis ~ ., data = train_pca_10, family = binomial)
+model_pca_90 <- glm(diagnosis ~ ., data = train_pca_90, family = binomial)
+```
+
+---
+
+## Predict test probabilities
+
+```{r}
+pca_predictions_2 <- test_pca_2 %>%
+  mutate(prob_malignant = predict(model_pca_2, newdata = test_pca_2, type = "response"))
+
+pca_predictions_5 <- test_pca_5 %>%
+  mutate(prob_malignant = predict(model_pca_5, newdata = test_pca_5, type = "response"))
+
+pca_predictions_10 <- test_pca_10 %>%
+  mutate(prob_malignant = predict(model_pca_10, newdata = test_pca_10, type = "response"))
+
+pca_predictions_90 <- test_pca_90 %>%
+  mutate(prob_malignant = predict(model_pca_90, newdata = test_pca_90, type = "response"))
+```
+
+---
+
+## Compare models
+
+```{r}
+model_results <- bind_rows(
+  evaluate_binary_model(full_test_predictions, "diagnosis", "prob_malignant") %>%
+    mutate(model = "Full original features", n_features = 30),
+
+  evaluate_binary_model(pca_predictions_2, "diagnosis", "prob_malignant") %>%
+    mutate(model = "PCA 2 components", n_features = 2),
+
+  evaluate_binary_model(pca_predictions_5, "diagnosis", "prob_malignant") %>%
+    mutate(model = "PCA 5 components", n_features = 5),
+
+  evaluate_binary_model(pca_predictions_10, "diagnosis", "prob_malignant") %>%
+    mutate(model = "PCA 10 components", n_features = 10),
+
+  evaluate_binary_model(pca_predictions_90, "diagnosis", "prob_malignant") %>%
+    mutate(model = "PCA 90% variance", n_features = n_pc_90)
+) %>%
+  select(model, n_features, accuracy, precision, recall, spec, f_meas, auc) %>%
+  arrange(desc(auc))
+
+model_results
+```
+
+---
+
+## Visual comparison
+
+```{r}
+model_results %>%
+  select(model, accuracy, precision, recall, spec, f_meas, auc) %>%
+  pivot_longer(
+    cols = -model,
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = reorder(model, value), y = value, fill = metric)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Original features vs PCA features",
+    x = "Model",
+    y = "Metric value",
+    fill = "Metric"
+  )
+```
+
+Discussion:
+
+- Does PCA reduce dimensionality without major performance loss?
+- How many PCs are enough?
+- Is the full model easier or harder to interpret?
+- Is PCA better for prediction, visualization, or both?
+
+---
+
+# 13. Training time comparison
+
+For this small dataset, timing differences may be small, but the principle matters for larger datasets.
+
+```{r}
+time_model_fit <- function(data) {
+  start <- Sys.time()
+  model <- glm(diagnosis ~ ., data = data, family = binomial)
+  end <- Sys.time()
+  as.numeric(end - start, units = "secs")
+}
+
+timing_results <- tibble(
+  model = c("Full original features", "PCA 2", "PCA 5", "PCA 10", "PCA 90%"),
+  training_time_seconds = c(
+    time_model_fit(train_data),
+    time_model_fit(train_pca_2),
+    time_model_fit(train_pca_5),
+    time_model_fit(train_pca_10),
+    time_model_fit(train_pca_90)
+  )
+)
+
+timing_results
+```
+
+---
+
+# 14. Beyond PCA
+
+## PCA
+
+Type:
+
+- unsupervised;
+- linear.
+
+Goal:
+
+- preserve variance.
+
+Strengths:
+
+- fast;
+- deterministic;
+- interpretable through loadings;
+- useful before modeling;
+- useful for compression.
+
+Limitations:
+
+- only captures linear structure;
+- components may be hard to interpret;
+- high variance does not always mean high class relevance.
+
+---
+
+## t-SNE
+
+Type:
+
+- unsupervised;
+- nonlinear.
+
+Goal:
+
+- preserve local neighborhoods.
+
+Good for:
+
+- visualization;
+- clusters;
+- single-cell data;
+- image embeddings.
+
+Limitations:
+
+- not usually used as predictive model input;
+- axes are not directly interpretable;
+- distances between distant clusters can be misleading;
+- results depend on parameters and random seed.
+
+---
+
+## UMAP
+
+Type:
+
+- unsupervised;
+- nonlinear.
+
+Goal:
+
+- preserve local structure and some global structure.
+
+Good for:
+
+- visualization;
+- high-dimensional biological datasets;
+- embeddings;
+- large datasets.
+
+Limitations:
+
+- parameters affect results;
+- axes are not directly interpretable;
+- not as simple to explain as PCA.
+
+---
+
+## LDA
+
+Type:
+
+- supervised;
+- linear.
+
+Goal:
+
+- maximize separation between known classes.
+
+Difference from PCA:
+
+- PCA ignores labels;
+- LDA uses labels.
+
+PCA asks:
+
+> Which directions explain the most variance?
+
+LDA asks:
+
+> Which directions best separate the classes?
+
+---
+
+# 15. Optional: t-SNE visualization
+
+Run this section only if `Rtsne` is installed.
+
+```{r}
+# library(Rtsne)
+# set.seed(42)
+#
+# tsne_result <- Rtsne(
+#   as.matrix(x_train_scaled),
+#   dims = 2,
+#   perplexity = 30,
+#   verbose = FALSE
+# )
+#
+# tsne_df <- as_tibble(tsne_result$Y) %>%
+#   rename(tSNE1 = V1, tSNE2 = V2) %>%
+#   mutate(diagnosis = y_train)
+#
+# ggplot(tsne_df, aes(x = tSNE1, y = tSNE2, color = diagnosis)) +
+#   geom_point(alpha = 0.8) +
+#   theme_minimal() +
+#   labs(
+#     title = "t-SNE visualization of WDBC training data",
+#     x = "t-SNE 1",
+#     y = "t-SNE 2"
+#   )
+```
+
+---
+
+# 16. Optional: UMAP visualization
+
+Run this section only if `umap` is installed.
+
+```{r}
+# library(umap)
+# set.seed(42)
+#
+# umap_result <- umap(as.matrix(x_train_scaled))
+#
+# umap_df <- as_tibble(umap_result$layout) %>%
+#   rename(UMAP1 = V1, UMAP2 = V2) %>%
+#   mutate(diagnosis = y_train)
+#
+# ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = diagnosis)) +
+#   geom_point(alpha = 0.8) +
+#   theme_minimal() +
+#   labs(
+#     title = "UMAP visualization of WDBC training data",
+#     x = "UMAP 1",
+#     y = "UMAP 2"
+#   )
+```
+
+---
+
+# 17. In-class challenge
+
+Using the WDBC dataset:
+
+1. Select only the `_mean` features.
+2. Scale the data.
+3. Run PCA.
+4. Plot PC1 vs PC2.
+5. Train logistic regression using:
+   - all `_mean` features;
+   - first 2 PCs;
+   - first 5 PCs.
+6. Compare AUC.
+7. Interpret PC1 loadings.
+
+```{r}
+# Your code here
+```
+
+---
+
+# 18. Homework: High-dimensional synthetic dataset
+
+For homework, students will generate a synthetic dataset with:
+
+- 500 samples;
+- 50 predictors;
+- 5 informative features;
+- 45 noisy features;
+- correlated predictors;
+- missing values;
+- outliers.
+
+Goal:
+
+Compare logistic regression on original features vs PCA-reduced features.
+
+---
+
+## Generate homework dataset
+
+```{r}
+set.seed(2040)
+
+n <- 500
+
+informative <- tibble(
+  x1 = rnorm(n),
+  x2 = rnorm(n),
+  x3 = rnorm(n),
+  x4 = rnorm(n),
+  x5 = rnorm(n)
+)
+
+correlated <- informative %>%
+  transmute(
+    x6 = x1 + rnorm(n, 0, 0.2),
+    x7 = x2 + rnorm(n, 0, 0.2),
+    x8 = x3 + rnorm(n, 0, 0.2),
+    x9 = x4 + rnorm(n, 0, 0.2),
+    x10 = x5 + rnorm(n, 0, 0.2)
+  )
+
+noise <- as_tibble(
+  matrix(
+    rnorm(n * 40),
+    nrow = n,
+    ncol = 40
+  )
+)
+
+names(noise) <- paste0("noise_", 1:40)
+
+homework_high_dim <- bind_cols(informative, correlated, noise) %>%
+  mutate(
+    linear_score =
+      1.4 * x1 -
+      1.2 * x2 +
+      1.0 * x3 +
+      0.8 * x4 -
+      1.5 * x5 +
+      rnorm(n, 0, 1),
+    probability = 1 / (1 + exp(-linear_score)),
+    class = rbinom(n, 1, probability),
+    class = factor(class, levels = c(1, 0), labels = c("positive", "negative"))
+  ) %>%
+  select(class, everything(), -linear_score, -probability) %>%
+  mutate(
+    x1 = if_else(row_number() %in% c(10, 50, 200), NA_real_, x1),
+    x2 = if_else(row_number() %in% c(15, 90, 250), NA_real_, x2),
+    x3 = if_else(row_number() %in% c(5, 111), x3 + 8, x3)
+  )
+
+homework_high_dim
+```
+
+---
+
+## Homework tasks
+
+### Task 1: Inspect data
+
+Check:
+
+- dimensions;
+- missing values;
+- class balance;
+- numeric summaries.
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 2: Clean data
+
+Decide how to handle missing values.
+
+Simple option:
+
+```r
+clean_homework <- homework_high_dim %>%
+  drop_na()
+```
+
+Better option:
+
+- median imputation for numeric features.
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 3: Train/test split
+
+Split data into training and test sets.
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 4: Full logistic regression
+
+Train logistic regression on all original features.
+
+Evaluate:
+
+- accuracy;
+- precision;
+- recall;
+- F1;
+- AUC.
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 5: PCA
+
+Using training data only:
+
+1. scale predictors;
+2. fit PCA;
+3. create scree plot;
+4. create cumulative variance plot;
+5. find number of PCs needed for 90% variance;
+6. plot PC1 vs PC2 colored by class.
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 6: PCA logistic regression
+
+Train logistic regression using:
+
+- first 2 PCs;
+- first 5 PCs;
+- first 10 PCs;
+- PCs explaining 90% variance.
+
+Compare against full logistic regression.
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 7: Loadings
+
+Identify the top contributors to:
+
+- PC1;
+- PC2.
+
+Are the informative variables recovered?
+
+```{r}
+# Your code here
+```
+
+---
+
+### Task 8: Final interpretation
+
+Write a short conclusion:
+
+1. How many original features were used?
+2. How many PCs were needed for 90% variance?
+3. Did PCA reduce dimensionality?
+4. Did PCA preserve classification performance?
+5. Which model would you choose and why?
+6. What are the limitations of PCA?
+
+---
+
+# Suggested submission format
+
+Students should submit:
+
+1. data cleaning code;
+2. train/test split code;
+3. correlation heatmap;
+4. scree plot;
+5. cumulative variance plot;
+6. PC1/PC2 visualization;
+7. PCA loading table;
+8. logistic regression model comparison table;
+9. final interpretation.
