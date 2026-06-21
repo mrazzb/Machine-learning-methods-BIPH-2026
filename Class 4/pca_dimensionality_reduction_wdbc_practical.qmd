@@ -78,9 +78,7 @@ The predictors are 30 quantitative features computed from digitized images of ce
 ## Load data
 
 ```{r}
-url <- "https://www.kaggle.com/api/v1/datasets/download/yasserh/breast-cancer-dataset"
-
-wdbc_raw <- read_csv(url)
+wdbc_raw <- read_csv("Class 4/breast-cancer.csv")
 
 glimpse(wdbc_raw)
 ```
@@ -965,39 +963,12 @@ Limitations:
 
 ---
 
-## LDA
-
-Type:
-
-- supervised;
-- linear.
-
-Goal:
-
-- maximize separation between known classes.
-
-Difference from PCA:
-
-- PCA ignores labels;
-- LDA uses labels.
-
-PCA asks:
-
-> Which directions explain the most variance?
-
-LDA asks:
-
-> Which directions best separate the classes?
-
----
-
 # 15. Optional: t-SNE visualization
 
 Run this section only if `Rtsne` is installed.
 
 ```{r}
 # library(Rtsne)
-# set.seed(42)
 #
 # tsne_result <- Rtsne(
 #   as.matrix(x_train_scaled),
@@ -1020,15 +991,12 @@ Run this section only if `Rtsne` is installed.
 #   )
 ```
 
----
 
-# 16. Optional: UMAP visualization
 
-Run this section only if `umap` is installed.
 
 ```{r}
 # library(umap)
-# set.seed(42)
+# 
 #
 # umap_result <- umap(as.matrix(x_train_scaled))
 #
@@ -1046,244 +1014,3 @@ Run this section only if `umap` is installed.
 #   )
 ```
 
----
-
-# 17. In-class challenge
-
-Using the WDBC dataset:
-
-1. Select only the `_mean` features.
-2. Scale the data.
-3. Run PCA.
-4. Plot PC1 vs PC2.
-5. Train logistic regression using:
-   - all `_mean` features;
-   - first 2 PCs;
-   - first 5 PCs.
-6. Compare AUC.
-7. Interpret PC1 loadings.
-
-```{r}
-# Your code here
-```
-
----
-
-# 18. Homework: High-dimensional synthetic dataset
-
-For homework, students will generate a synthetic dataset with:
-
-- 500 samples;
-- 50 predictors;
-- 5 informative features;
-- 45 noisy features;
-- correlated predictors;
-- missing values;
-- outliers.
-
-Goal:
-
-Compare logistic regression on original features vs PCA-reduced features.
-
----
-
-## Generate homework dataset
-
-```{r}
-set.seed(2040)
-
-n <- 500
-
-informative <- tibble(
-  x1 = rnorm(n),
-  x2 = rnorm(n),
-  x3 = rnorm(n),
-  x4 = rnorm(n),
-  x5 = rnorm(n)
-)
-
-correlated <- informative %>%
-  transmute(
-    x6 = x1 + rnorm(n, 0, 0.2),
-    x7 = x2 + rnorm(n, 0, 0.2),
-    x8 = x3 + rnorm(n, 0, 0.2),
-    x9 = x4 + rnorm(n, 0, 0.2),
-    x10 = x5 + rnorm(n, 0, 0.2)
-  )
-
-noise <- as_tibble(
-  matrix(
-    rnorm(n * 40),
-    nrow = n,
-    ncol = 40
-  )
-)
-
-names(noise) <- paste0("noise_", 1:40)
-
-homework_high_dim <- bind_cols(informative, correlated, noise) %>%
-  mutate(
-    linear_score =
-      1.4 * x1 -
-      1.2 * x2 +
-      1.0 * x3 +
-      0.8 * x4 -
-      1.5 * x5 +
-      rnorm(n, 0, 1),
-    probability = 1 / (1 + exp(-linear_score)),
-    class = rbinom(n, 1, probability),
-    class = factor(class, levels = c(1, 0), labels = c("positive", "negative"))
-  ) %>%
-  select(class, everything(), -linear_score, -probability) %>%
-  mutate(
-    x1 = if_else(row_number() %in% c(10, 50, 200), NA_real_, x1),
-    x2 = if_else(row_number() %in% c(15, 90, 250), NA_real_, x2),
-    x3 = if_else(row_number() %in% c(5, 111), x3 + 8, x3)
-  )
-
-homework_high_dim
-```
-
----
-
-## Homework tasks
-
-### Task 1: Inspect data
-
-Check:
-
-- dimensions;
-- missing values;
-- class balance;
-- numeric summaries.
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 2: Clean data
-
-Decide how to handle missing values.
-
-Simple option:
-
-```r
-clean_homework <- homework_high_dim %>%
-  drop_na()
-```
-
-Better option:
-
-- median imputation for numeric features.
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 3: Train/test split
-
-Split data into training and test sets.
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 4: Full logistic regression
-
-Train logistic regression on all original features.
-
-Evaluate:
-
-- accuracy;
-- precision;
-- recall;
-- F1;
-- AUC.
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 5: PCA
-
-Using training data only:
-
-1. scale predictors;
-2. fit PCA;
-3. create scree plot;
-4. create cumulative variance plot;
-5. find number of PCs needed for 90% variance;
-6. plot PC1 vs PC2 colored by class.
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 6: PCA logistic regression
-
-Train logistic regression using:
-
-- first 2 PCs;
-- first 5 PCs;
-- first 10 PCs;
-- PCs explaining 90% variance.
-
-Compare against full logistic regression.
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 7: Loadings
-
-Identify the top contributors to:
-
-- PC1;
-- PC2.
-
-Are the informative variables recovered?
-
-```{r}
-# Your code here
-```
-
----
-
-### Task 8: Final interpretation
-
-Write a short conclusion:
-
-1. How many original features were used?
-2. How many PCs were needed for 90% variance?
-3. Did PCA reduce dimensionality?
-4. Did PCA preserve classification performance?
-5. Which model would you choose and why?
-6. What are the limitations of PCA?
-
----
-
-# Suggested submission format
-
-Students should submit:
-
-1. data cleaning code;
-2. train/test split code;
-3. correlation heatmap;
-4. scree plot;
-5. cumulative variance plot;
-6. PC1/PC2 visualization;
-7. PCA loading table;
-8. logistic regression model comparison table;
-9. final interpretation.
