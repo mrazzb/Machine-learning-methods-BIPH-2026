@@ -1,0 +1,849 @@
+---
+title: "Practical: KNN, SVM, and K-means Clustering"
+subtitle: "Distance-based models, margins, kernels, and unsupervised clustering"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+
+```{r}
+library(tidyverse)
+library(yardstick)
+library(pROC)
+library(class)
+library(e1071)
+```
+
+If packages are missing, install once:
+
+```r
+install.packages(c("class", "e1071", "yardstick", "pROC"))
+```
+
+# pandas equivalent:
+# from sklearn.neighbors import KNeighborsClassifier
+# from sklearn.svm import SVC
+# from sklearn.cluster import KMeans
+# from sklearn.preprocessing import StandardScaler
+
+---
+
+# 1. Where are we in the course?
+
+So far we discussed:
+
+- tidy data and data manipulation;
+- linear regression;
+- logistic regression and classification metrics;
+- PCA and dimensionality reduction;
+- decision trees, random forests, and XGBoost.
+
+Now we move to another family of methods:
+
+- K-nearest neighbors;
+- support vector machines;
+- clustering.
+
+These methods introduce three important ideas:
+
+1. **Distance** between observations.
+2. **Decision boundaries** in feature space.
+3. **Unsupervised structure discovery**.
+
+---
+
+# 2. Dataset: Wisconsin Diagnostic Breast Cancer
+
+We will continue using the Wisconsin Diagnostic Breast Cancer dataset.
+
+Target:
+
+- `M`: malignant;
+- `B`: benign.
+
+Predictors:
+
+- 30 quantitative features extracted from digitized images of cell nuclei.
+
+## Load data
+
+```{r}
+wdbc_raw <- read_csv("breast-cancer.csv")
+
+names(wdbc_raw) <- names(wdbc_raw) %>%
+  str_replace_all(" ", "_") %>%
+  str_replace_all("-", "_") %>%
+  str_replace_all("\\\\.", "_") %>%
+  str_to_lower()
+
+wdbc <- wdbc_raw %>%
+  mutate(
+    diagnosis = factor(diagnosis, levels = c("M", "B"))
+  ) %>%
+  select(-id)
+
+glimpse(wdbc)
+```
+
+
+
+## Class balance
+
+```{r}
+wdbc %>%
+  count(diagnosis) %>%
+  mutate(percent = n / sum(n) * 100)
+```
+
+```{r}
+ggplot(wdbc, aes(x = diagnosis, fill = diagnosis)) +
+  geom_bar() +
+  theme_minimal() +
+  labs(
+    title = "Class balance",
+    x = "Diagnosis",
+    y = "Count"
+  )
+```
+
+---
+
+# 3. Train/test split
+
+We keep a separate test set for honest evaluation.
+
+```{r}
+set.seed(22)
+
+train_data <- wdbc %>%
+  group_by(diagnosis) %>%
+  slice_sample(prop = 0.75) %>%
+  ungroup()
+
+test_data <- wdbc %>%
+  anti_join(train_data, by = names(wdbc))
+
+train_data %>% count(diagnosis)
+test_data %>% count(diagnosis)
+```
+
+---
+
+# 4. Why scaling matters
+
+KNN and SVM are distance-based or geometry-based methods.
+
+If one feature has a much larger numeric scale than another, it can dominate the model.
+
+Example:
+
+- `area_mean` may be hundreds or thousands;
+- `smoothness_mean` may be around 0.1.
+
+Without scaling, the model may mostly pay attention to `area_mean`.
+
+```{r}
+wdbc %>%
+  select(-diagnosis) %>%
+  summarise(across(everything(), sd)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "feature",
+    values_to = "sd"
+  ) %>%
+  arrange(desc(sd)) %>%
+  head(10)
+```
+
+
+## Scale using train data only
+
+```{r}
+x_train <- train_data %>% select(-diagnosis)
+x_test <- test_data %>% select(-diagnosis)
+
+y_train <- train_data$diagnosis
+y_test <- test_data$diagnosis
+
+train_means <- x_train %>%
+  summarise(across(everything(), mean))
+
+train_sds <- x_train %>%
+  summarise(across(everything(), sd))
+
+x_train_scaled <- scale(
+  x_train,
+  center = as.numeric(train_means),
+  scale = as.numeric(train_sds)
+)
+
+x_test_scaled <- scale(
+  x_test,
+  center = as.numeric(train_means),
+  scale = as.numeric(train_sds)
+)
+```
+
+# pandas equivalent:
+# scaler = StandardScaler()
+# X_train_scaled = scaler.fit_transform(X_train)
+# X_test_scaled = scaler.transform(X_test)
+
+---
+
+# 5. Helper function for evaluation
+
+```{r}
+evaluate_classification <- function(truth, predicted_class, prob_malignant = NULL) {
+  eval_data <- tibble(
+    truth = factor(truth, levels = c("M", "B")),
+    estimate = factor(predicted_class, levels = c("M", "B"))
+  )
+
+  metrics <- metric_set(accuracy, precision, recall, spec, f_meas)(
+    eval_data,
+    truth = truth,
+    estimate = estimate
+  ) %>%
+    select(.metric, .estimate) %>%
+    pivot_wider(names_from = .metric, values_from = .estimate)
+
+  if (!is.null(prob_malignant)) {
+    auc_value <- roc(
+      response = factor(truth, levels = c("B", "M")),
+      predictor = prob_malignant,
+      levels = c("B", "M")
+    ) %>%
+      auc() %>%
+      as.numeric()
+
+    metrics <- metrics %>% mutate(auc = auc_value)
+  }
+
+  metrics
+}
+```
+
+
+
+# 6. K-nearest neighbors
+
+KNN is one of the simplest classification algorithms.
+
+For a new sample:
+
+1. calculate distance to training samples;
+2. find the `k` nearest neighbors;
+3. use majority vote among those neighbors;
+4. assign the most common class.
+
+Example:
+
+```text
+New sample
+  nearest neighbors:
+    M, M, B, M, B
+  majority = M
+  prediction = malignant
+```
+
+## Why `k` matters
+
+Small `k`:
+
+- very flexible;
+- sensitive to noise;
+- can overfit.
+
+Large `k`:
+
+- smoother decision boundary;
+- less sensitive to noise;
+- can underfit.
+
+
+
+## KNN with k = 5
+
+```{r}
+set.seed(22)
+
+knn_pred_k5 <- knn(
+  train = x_train_scaled,
+  test = x_test_scaled,
+  cl = y_train,
+  k = 5,
+  prob = TRUE
+)
+
+knn_pred_k5 <- factor(knn_pred_k5, levels = c("M", "B"))
+
+evaluate_classification(
+  truth = y_test,
+  predicted_class = knn_pred_k5
+)
+```
+
+Note:
+
+The base `class::knn()` function gives class predictions but does not provide convenient class probabilities for ROC AUC.
+
+For simplicity, we evaluate KNN using threshold-based class metrics.
+
+
+## Confusion matrix
+
+```{r}
+table(
+  Truth = y_test,
+  Prediction = knn_pred_k5
+)
+```
+
+
+
+```{r}
+k_values <- c(1, 3, 5, 7, 11, 15, 21)
+
+knn_results <- map_dfr(
+  k_values,
+  function(k_value) {
+    pred <- knn(
+      train = x_train_scaled,
+      test = x_test_scaled,
+      cl = y_train,
+      k = k_value
+    )
+
+    evaluate_classification(
+      truth = y_test,
+      predicted_class = factor(pred, levels = c("M", "B"))
+    ) %>%
+      mutate(k = k_value)
+  }
+)
+
+knn_results
+```
+
+```{r}
+knn_results %>%
+  pivot_longer(
+    cols = c(accuracy, precision, recall, spec, f_meas),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = k, y = value, color = metric)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Effect of k on KNN performance",
+    x = "Number of neighbors k",
+    y = "Metric value",
+    color = "Metric"
+  )
+```
+
+
+# 7. Visualizing KNN idea in two dimensions
+
+High-dimensional KNN is hard to visualize.  
+For illustration, we use only two features.
+
+```{r}
+ggplot(train_data, aes(x = radius_mean, y = texture_mean, color = diagnosis)) +
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Two-dimensional view of WDBC training data",
+    x = "Mean radius",
+    y = "Mean texture",
+    color = "Diagnosis"
+  )
+```
+
+KNN uses nearby points in feature space.  
+In real use, it considers all scaled features, not only two.
+
+---
+
+# 8. Support Vector Machines
+
+Support Vector Machines try to find a decision boundary that separates classes.
+
+In two dimensions, this boundary is a line.
+
+The goal is not just to separate classes, but to maximize the **margin**.
+
+The margin is the distance between the decision boundary and the closest samples.
+
+These closest samples are called **support vectors**.
+
+## Linear SVM intuition
+
+```text
+Class A       |       Class B
+   o          |          x
+      o       |       x
+        o     |    x
+--------------|----------------  decision boundary
+```
+
+A wider margin usually means better generalization.
+
+---
+
+## Fit linear SVM
+
+```{r}
+svm_train_df <- as_tibble(x_train_scaled) %>%
+  mutate(diagnosis = y_train)
+
+svm_test_df <- as_tibble(x_test_scaled) %>%
+  mutate(diagnosis = y_test)
+
+linear_svm <- svm(
+  diagnosis ~ .,
+  data = svm_train_df,
+  kernel = "linear",
+  probability = TRUE
+)
+
+linear_svm
+```
+
+# pandas equivalent:
+# svm_model = SVC(kernel="linear", probability=True)
+# svm_model.fit(X_train_scaled, y_train)
+
+---
+
+## Predict with linear SVM
+
+```{r}
+linear_svm_pred <- predict(
+  linear_svm,
+  newdata = svm_test_df,
+  probability = TRUE
+)
+
+linear_svm_prob <- attr(linear_svm_pred, "probabilities")[, "M"]
+
+linear_svm_results <- evaluate_classification(
+  truth = y_test,
+  predicted_class = factor(linear_svm_pred, levels = c("M", "B")),
+  prob_malignant = linear_svm_prob
+) %>%
+  mutate(model = "Linear SVM")
+
+linear_svm_results
+```
+
+---
+
+# 9. Kernel trick and radial SVM
+
+A linear SVM can only draw a linear decision boundary.
+
+But many datasets are not linearly separable.
+
+The **kernel trick** allows SVMs to create nonlinear decision boundaries.
+
+Common kernels:
+
+- linear;
+- polynomial;
+- radial basis function.
+
+The radial kernel is often a strong default for nonlinear data.
+
+---
+
+## Fit radial SVM
+
+```{r}
+radial_svm <- svm(
+  diagnosis ~ .,
+  data = svm_train_df,
+  kernel = "radial",
+  probability = TRUE
+)
+
+radial_svm
+```
+
+---
+
+## Predict with radial SVM
+
+```{r}
+radial_svm_pred <- predict(
+  radial_svm,
+  newdata = svm_test_df,
+  probability = TRUE
+)
+
+radial_svm_prob <- attr(radial_svm_pred, "probabilities")[, "M"]
+
+radial_svm_results <- evaluate_classification(
+  truth = y_test,
+  predicted_class = factor(radial_svm_pred, levels = c("M", "B")),
+  prob_malignant = radial_svm_prob
+) %>%
+  mutate(model = "Radial SVM")
+
+radial_svm_results
+```
+
+---
+
+# 10. SVM hyperparameters
+
+Important SVM hyperparameters:
+
+## Cost
+
+`cost` controls how strongly the model penalizes misclassification.
+
+Low cost:
+
+- wider margin;
+- more tolerance for errors;
+- smoother boundary.
+
+High cost:
+
+- tries harder to classify training samples correctly;
+- narrower margin;
+- can overfit.
+
+## Gamma
+
+For radial SVM, `gamma` controls how local the decision boundary is.
+
+Low gamma:
+
+- smoother decision boundary.
+
+High gamma:
+
+- more flexible boundary;
+- can overfit.
+
+---
+
+## Simple cost comparison
+
+```{r}
+cost_values <- c(0.1, 1, 10)
+
+svm_cost_results <- map_dfr(
+  cost_values,
+  function(cost_value) {
+    model <- svm(
+      diagnosis ~ .,
+      data = svm_train_df,
+      kernel = "radial",
+      cost = cost_value,
+      probability = TRUE
+    )
+
+    pred <- predict(
+      model,
+      newdata = svm_test_df,
+      probability = TRUE
+    )
+
+    prob <- attr(pred, "probabilities")[, "M"]
+
+    evaluate_classification(
+      truth = y_test,
+      predicted_class = factor(pred, levels = c("M", "B")),
+      prob_malignant = prob
+    ) %>%
+      mutate(cost = cost_value)
+  }
+)
+
+svm_cost_results
+```
+
+---
+
+# 11. Compare supervised models
+
+```{r}
+best_knn <- knn_results %>%
+  arrange(desc(f_meas)) %>%
+  slice(1) %>%
+  mutate(model = paste0("KNN k=", k)) %>%
+  select(model, accuracy, precision, recall, spec, f_meas)
+
+supervised_results <- bind_rows(
+  best_knn,
+  linear_svm_results %>% select(model, accuracy, precision, recall, spec, f_meas, auc),
+  radial_svm_results %>% select(model, accuracy, precision, recall, spec, f_meas, auc)
+)
+
+supervised_results
+```
+
+Discussion:
+
+- Which model has the highest recall?
+- Which model has the highest precision?
+- Which model would you prefer for screening?
+- Which model is easiest to explain?
+
+
+---
+
+# 12. From supervised to unsupervised learning
+
+KNN and SVM are supervised:
+
+- they use known labels during training.
+
+K-means clustering is unsupervised:
+
+- it does not use labels;
+- it tries to discover groups based only on feature similarity.
+
+This is useful when we do not know the true labels.
+
+Examples:
+
+- patient subgroups;
+- cell populations;
+- image phenotype clusters;
+- molecular descriptor groups;
+- experimental batch structure.
+
+---
+
+# 13. K-means clustering
+
+K-means tries to divide data into `k` clusters.
+
+Algorithm:
+
+1. choose number of clusters `k`;
+2. initialize cluster centers;
+3. assign each point to nearest center;
+4. update centers;
+5. repeat until stable.
+
+Important:
+
+- k-means uses distance;
+- scaling is essential;
+- we must choose `k`;
+- clusters are not automatically biological classes.
+
+---
+
+## K-means with k = 2
+
+Since the WDBC dataset has two known classes, we can try `k = 2`.
+
+However, k-means does not know the labels.
+
+```{r}
+set.seed(42)
+
+kmeans_2 <- kmeans(
+  x_train_scaled,
+  centers = 2,
+  nstart = 25
+)
+
+kmeans_2
+```
+
+---
+
+## Compare clusters with true labels
+
+```{r}
+cluster_df <- tibble(
+  diagnosis = y_train,
+  cluster = factor(kmeans_2$cluster)
+)
+
+table(
+  Diagnosis = cluster_df$diagnosis,
+  Cluster = cluster_df$cluster
+)
+```
+
+Important:
+
+Cluster number `1` or `2` has no inherent meaning.  
+We compare clusters to known labels only after clustering.
+
+---
+
+# 14. Visualize clusters with PCA
+
+Because k-means was run in 30-dimensional space, we need a 2D projection for visualization.
+
+We will use PCA only for plotting.
+
+```{r}
+pca_model <- prcomp(
+  x_train_scaled,
+  center = FALSE,
+  scale. = FALSE
+)
+
+pca_scores <- as_tibble(pca_model$x[, 1:2]) %>%
+  mutate(
+    diagnosis = y_train,
+    cluster = factor(kmeans_2$cluster)
+  )
+```
+
+---
+
+## PCA plot colored by true diagnosis
+
+```{r}
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = diagnosis)) +
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "PCA projection colored by true diagnosis",
+    x = "PC1",
+    y = "PC2",
+    color = "Diagnosis"
+  )
+```
+
+---
+
+## PCA plot colored by k-means cluster
+
+```{r}
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "PCA projection colored by k-means cluster",
+    x = "PC1",
+    y = "PC2",
+    color = "Cluster"
+  )
+```
+
+Question:
+
+> Do the unsupervised clusters match the known diagnosis labels?
+
+---
+
+# 15. Choosing number of clusters
+
+In real unsupervised learning, we usually do not know the true number of clusters.
+
+One simple method is the elbow plot.
+
+K-means returns total within-cluster sum of squares.
+
+Lower is better, but it always decreases as `k` increases.
+
+We look for an elbow point where improvement slows.
+
+```{r}
+set.seed(2)
+
+kmeans_wss <- map_dfr(
+  1:10,
+  function(k_value) {
+    model <- kmeans(
+      x_train_scaled,
+      centers = k_value,
+      nstart = 25
+    )
+
+    tibble(
+      k = k_value,
+      total_withinss = model$tot.withinss
+    )
+  }
+)
+
+kmeans_wss
+```
+
+```{r}
+ggplot(kmeans_wss, aes(x = k, y = total_withinss)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Elbow plot for k-means",
+    x = "Number of clusters k",
+    y = "Total within-cluster sum of squares"
+  )
+```
+
+---
+
+# 16. Strengths and weaknesses
+
+## KNN
+
+Strengths:
+
+- simple;
+- no explicit training;
+- flexible boundaries;
+- useful baseline.
+
+Weaknesses:
+
+- slow prediction for large datasets;
+- sensitive to scaling;
+- sensitive to irrelevant features;
+- choice of `k` matters;
+- less interpretable in high dimensions.
+
+## SVM
+
+Strengths:
+
+- strong classifier;
+- works well in high-dimensional spaces;
+- kernels allow nonlinear boundaries;
+- often effective on small-to-medium datasets.
+
+Weaknesses:
+
+- scaling required;
+- hyperparameters matter;
+- probability estimates can be less direct;
+- harder to interpret than logistic regression or trees.
+
+## K-means
+
+Strengths:
+
+- simple;
+- fast;
+- useful for exploratory analysis;
+- good for roughly spherical clusters.
+
+Weaknesses:
+
+- must choose `k`;
+- sensitive to scaling;
+- sensitive to initialization;
+- assumes clusters are compact and roughly spherical;
+- clusters may not match biological labels.
