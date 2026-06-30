@@ -191,31 +191,7 @@ Interpretation:
 - Gini = 0 means perfectly pure;
 - higher Gini means more mixed.
 
-## Visual Gini example
 
-```{r}
-gini_data <- tibble(
-  p_malignant = seq(0, 1, length.out = 200),
-  p_benign = 1 - p_malignant,
-  gini = 1 - p_malignant^2 - p_benign^2
-)
-
-ggplot(gini_data, aes(x = p_malignant, y = gini)) +
-  geom_line(linewidth = 1.2, color = "steelblue") +
-  theme_minimal() +
-  labs(
-    title = "Gini impurity for binary classification",
-    x = "Proportion malignant",
-    y = "Gini impurity"
-  )
-```
-
-Question:
-
-> At which class proportion is the node most mixed?
-
-
----
 
 # 5. Fit a basic decision tree
 
@@ -595,7 +571,7 @@ rf_model
 ```
 
 # pandas equivalent:
-# rf = RandomForestClassifier(n_estimators=500, random_state=42)
+# rf = RandomForestClassifier(n_estimators=500, random_state=23)
 # rf.fit(X_train, y_train)
 
 ---
@@ -655,7 +631,7 @@ rf_importance <- importance(rf_model) %>%
 
 rf_importance %>%
   arrange(desc(MeanDecreaseGini)) %>%
-  slice(1:15) %>%
+  dplyr::slice(1:15) %>%
   ggplot(aes(x = reorder(feature, MeanDecreaseGini), y = MeanDecreaseGini)) +
   geom_col(fill = "darkgreen") +
   coord_flip() +
